@@ -1,0 +1,135 @@
+name: Build PyScout
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+
+  # ── Windows: Nuitka + Inno Setup ─────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install nuitka pyside6 python-mpv requests pillow ordered-set
+
+      - name: Build with Nuitka
+        run: >
+          python -m nuitka
+          --standalone
+          --enable-plugin=pyside6
+          --windows-icon-from-ico=ico.ico
+          --windows-console-mode=disable
+          --company-name="PyScout"
+          --product-name="PyScout"
+          --file-version="1.0.0.0"
+          --product-version="1.0.0.0"
+          --include-data-files=ico.ico=ico.ico
+          --include-data-files=ico_4k.png=ico_4k.png
+          --include-data-files=splash.png=splash.png
+          --include-data-files=libmpv-2.dll=libmpv-2.dll
+          --include-data-files=ffmpeg.exe=ffmpeg.exe
+          --include-data-dir=icons=icons
+          --include-data-dir=fonts=fonts
+          --output-dir=build
+          main.py
+
+      - name: Build installer with Inno Setup
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyScout-Windows
+          path: dist/PyScout-Setup.exe
+
+  # ── macOS: Nuitka + zip del .app ─────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: brew install mpv ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install nuitka pyside6 python-mpv requests pillow ordered-set
+
+      - name: Copy libmpv dylib
+        run: |
+          if [ -f /opt/homebrew/lib/libmpv.2.dylib ]; then
+            cp /opt/homebrew/lib/libmpv.2.dylib ./libmpv.2.dylib
+          elif [ -f /usr/local/lib/libmpv.2.dylib ]; then
+            cp /usr/local/lib/libmpv.2.dylib ./libmpv.2.dylib
+          else
+            echo "libmpv not found" && exit 1
+          fi
+
+      - name: Build with Nuitka
+        run: |
+          python -m nuitka \
+            --standalone \
+            --enable-plugin=pyside6 \
+            --macos-create-app-bundle \
+            --macos-app-name="PyScout" \
+            --macos-app-version="1.0.0" \
+            --include-data-files=ico_4k.png=ico_4k.png \
+            --include-data-files=splash.png=splash.png \
+            --include-data-files=libmpv.2.dylib=libmpv.2.dylib \
+            --include-data-dir=icons=icons \
+            --include-data-dir=fonts=fonts \
+            --output-dir=build \
+            main.py
+
+      - name: Zip .app for distribution
+        run: |
+          mkdir -p dist
+          cd build && mv main.app PyScout.app && zip -r ../dist/PyScout-macOS.zip PyScout.app
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyScout-macOS
+          path: dist/PyScout-macOS.zip
+
+  # ── Release: adjunta ambos archivos al GitHub Release ────────────────────
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PyScout-Windows
+          path: artifacts/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PyScout-macOS
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/PyScout-Setup.exe
+            artifacts/PyScout-macOS.zip
+          generate_release_notes: true

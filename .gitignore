@@ -1,0 +1,40 @@
+# Build outputs
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+
+# Binaries (pesados, no van en git)
+libmpv-2.dll
+ffmpeg.exe
+ffprobe.exe
+
+# Videos de prueba
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# Archivos temporales
+*.tmp
+*.log
+scoutapp.zip
+scoutapp_bundle.txt
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

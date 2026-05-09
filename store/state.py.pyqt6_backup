@@ -1,0 +1,341 @@
+from __future__ import annotations
+import uuid, json
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+from PyQt6.QtCore import QObject, pyqtSignal
+
+
+@dataclass
+class Button:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    label: str = ""
+    color: str = "#E8821A"
+
+
+@dataclass
+class VideoSource:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    path: str = ""
+    name: str = ""
+    last_pos: float = 0.0   # última posición del playhead para restaurar al volver
+
+
+@dataclass
+class Clip:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+    color: str = "#E8821A"
+    video_path: str = ""
+    video_name: str = ""
+    timestamp: str = "0:00:00"
+    time_sec: float = 0.0
+    start_sec: float = 0.0
+    end_sec: float = 10.0
+    note: str = ""
+    in_presentation: bool = False
+
+    @property
+    def duration(self) -> float:
+        return max(0.1, self.end_sec - self.start_sec)
+
+
+@dataclass
+class PresentationItem:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    type: str = "clip"
+    name: str = ""
+    category: str = ""     # categoría original (para filtros en Ajuste)
+    color: str = "#E8821A"
+    note: str = ""
+    video_path: str = ""
+    video_name: str = ""
+    timestamp: str = ""
+    clip_start: float = 0.0
+    clip_dur: float = 10.0
+    show_overlay: bool = False
+    image_path: str = ""
+    image_dur: float = 3.0
+
+    @property
+    def duration(self) -> float:
+        return self.image_dur if self.type == "image" else self.clip_dur
+
+
+class AppState(QObject):
+    buttons_changed      = pyqtSignal()
+    clips_changed        = pyqtSignal()
+    presentation_changed = pyqtSignal()
+    sources_changed      = pyqtSignal()          # lista de fuentes cambió
+    active_source_changed = pyqtSignal(str, str) # path, name
+    project_changed      = pyqtSignal(str)
+    overlay_changed      = pyqtSignal(bool)
+    toast_requested      = pyqtSignal(str)
+    undo_redo_changed    = pyqtSignal(bool, bool) # can_undo, can_redo
+
+    MAX_UNDO = 50
+
+    def __init__(self):
+        super().__init__()
+        self.project_name: str = "Sin título"
+        self.buttons: list[Button] = []
+        self.video_sources: list[VideoSource] = []
+        self.active_source_idx: int = -1
+        self.clips: list[Clip] = []
+        self.presentation: list[PresentationItem] = []
+        self.default_pad: float = 5.0
+        self.overlay_enabled: bool = False
+        self._undo_stack: list[dict] = []
+        self._redo_stack: list[dict] = []
+
+    # ── Undo / Redo ───────────────────────────────────────────────────────────
+
+    def _snapshot(self) -> dict:
+        return {
+            "buttons": [asdict(b) for b in self.buttons],
+            "clips": [asdict(c) for c in self.clips],
+            "presentation": [asdict(p) for p in self.presentation],
+        }
+
+    def _restore_snapshot(self, snap: dict):
+        self.buttons      = [Button(**b) for b in snap.get("buttons", [])]
+        self.clips         = [Clip(**c) for c in snap.get("clips", [])]
+        self.presentation  = [PresentationItem(**p) for p in snap.get("presentation", [])]
+        self.buttons_changed.emit()
+        self.clips_changed.emit()
+        self.presentation_changed.emit()
+
+    def push_undo(self):
+        """Guardar snapshot antes de una operación destructiva."""
+        self._undo_stack.append(self._snapshot())
+        if len(self._undo_stack) > self.MAX_UNDO:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self.undo_redo_changed.emit(True, False)
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        snap = self._undo_stack.pop()
+        self._restore_snapshot(snap)
+        self.undo_redo_changed.emit(bool(self._undo_stack), True)
+        self.toast_requested.emit("Deshacer")
+
+    def redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        snap = self._redo_stack.pop()
+        self._restore_snapshot(snap)
+        self.undo_redo_changed.emit(True, bool(self._redo_stack))
+        self.toast_requested.emit("Rehacer")
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    # ── Propiedades del source activo ─────────────────────────────────────────
+    @property
+    def active_video_path(self) -> str:
+        s = self._active_source()
+        return s.path if s else ""
+
+    @property
+    def active_video_name(self) -> str:
+        s = self._active_source()
+        return s.name if s else ""
+
+    def _active_source(self) -> Optional[VideoSource]:
+        if 0 <= self.active_source_idx < len(self.video_sources):
+            return self.video_sources[self.active_source_idx]
+        return None
+
+    # ── Video sources ─────────────────────────────────────────────────────────
+    def add_video_source(self, path: str) -> int:
+        """Agrega una fuente y la activa. Devuelve el índice."""
+        # Si ya existe, solo activarla
+        for i, vs in enumerate(self.video_sources):
+            if vs.path == path:
+                self._switch_source(i)
+                return i
+        if len(self.video_sources) >= 10:
+            self.toast_requested.emit("Máximo 10 videos fuente")
+            return self.active_source_idx
+        name = path.replace("\\", "/").split("/")[-1]
+        vs = VideoSource(path=path, name=name)
+        self.video_sources.append(vs)
+        idx = len(self.video_sources) - 1
+        self._switch_source(idx)
+        self.sources_changed.emit()
+        return idx
+
+    def remove_video_source(self, idx: int):
+        if not (0 <= idx < len(self.video_sources)):
+            return
+        self.video_sources.pop(idx)
+        # Ajustar índice activo
+        if not self.video_sources:
+            self.active_source_idx = -1
+            self.active_source_changed.emit("", "")
+        else:
+            new_idx = min(idx, len(self.video_sources) - 1)
+            self._switch_source(new_idx)
+        self.sources_changed.emit()
+
+    def switch_source(self, idx: int):
+        if 0 <= idx < len(self.video_sources):
+            self._switch_source(idx)
+
+    def _switch_source(self, idx: int):
+        self.active_source_idx = idx
+        vs = self.video_sources[idx]
+        self.active_source_changed.emit(vs.path, vs.name)
+
+    def save_source_position(self, position: float):
+        """Guarda la posición actual del video antes de cambiar de source."""
+        s = self._active_source()
+        if s:
+            s.last_pos = position
+
+    # ── Botones ───────────────────────────────────────────────────────────────
+    def add_button(self, label: str, color: str = "#1c1c1c") -> Button:
+        self.push_undo()
+        btn = Button(label=label, color=color)
+        self.buttons.append(btn)
+        self.buttons_changed.emit()
+        return btn
+
+    def remove_button(self, btn_id: str):
+        self.push_undo()
+        self.buttons = [b for b in self.buttons if b.id != btn_id]
+        self.buttons_changed.emit()
+
+    # ── Clips ─────────────────────────────────────────────────────────────────
+    def add_clip(self, button: Button, time_sec: float) -> Clip:
+        self.push_undo()
+        from utils.time_utils import fmt_time
+        pad_b = getattr(button, 'pad_before', -1); pad_b = pad_b if pad_b >= 0 else self.default_pad
+        pad_a = getattr(button, 'pad_after',  -1); pad_a = pad_a if pad_a >= 0 else self.default_pad
+        clip = Clip(
+            name=button.label, color=button.color,
+            video_path=self.active_video_path,
+            video_name=self.active_video_name,
+            timestamp=fmt_time(time_sec), time_sec=time_sec,
+            start_sec=max(0, time_sec - pad_b),
+            end_sec=time_sec + pad_a,
+        )
+        self.clips.append(clip)
+        self.clips_changed.emit()
+        self.toast_requested.emit(f"{button.label} registrado — {clip.timestamp}")
+        return clip
+
+    def update_clip(self, clip_id: str, **kwargs):
+        for c in self.clips:
+            if c.id == clip_id:
+                for k, v in kwargs.items():
+                    setattr(c, k, v)
+        self.clips_changed.emit()
+
+    def remove_clip(self, clip_id: str):
+        self.push_undo()
+        self.clips = [c for c in self.clips if c.id != clip_id]
+        self.clips_changed.emit()
+
+    # ── Presentación ──────────────────────────────────────────────────────────
+    def add_clip_to_presentation(self, clip: Clip, clip_start: float, clip_dur: float):
+        self.push_undo()
+        item = PresentationItem(
+            type="clip", name=clip.name, category=clip.name,
+            color=clip.color, note=clip.note,
+            video_path=clip.video_path, video_name=clip.video_name,
+            timestamp=clip.timestamp, clip_start=clip_start, clip_dur=clip_dur,
+            show_overlay=self.overlay_enabled,
+        )
+        self.presentation.append(item)
+        clip.in_presentation = True
+        self.presentation_changed.emit()
+        self.toast_requested.emit(f'"{clip.name}" agregado a la presentación')
+
+    def add_image_to_presentation(self, image_path: str, dur: float = 3.0):
+        name = image_path.replace("\\", "/").split("/")[-1].rsplit(".", 1)[0]
+        item = PresentationItem(type="image", name=name, color="#555555",
+                                image_path=image_path, image_dur=dur)
+        self.presentation.append(item)
+        self.presentation_changed.emit()
+        self.toast_requested.emit(f'Imagen "{name}" agregada')
+
+    def update_pres_item(self, item_id: str, **kwargs):
+        for p in self.presentation:
+            if p.id == item_id:
+                for k, v in kwargs.items():
+                    setattr(p, k, v)
+        self.presentation_changed.emit()
+
+    def remove_pres_item(self, item_id: str):
+        self.push_undo()
+        self.presentation = [p for p in self.presentation if p.id != item_id]
+        self.presentation_changed.emit()
+
+    def reorder_presentation(self, from_idx: int, to_idx: int):
+        self.push_undo()
+        item = self.presentation.pop(from_idx)
+        self.presentation.insert(to_idx, item)
+        self.presentation_changed.emit()
+
+    def set_overlay(self, enabled: bool):
+        self.overlay_enabled = enabled
+        self.overlay_changed.emit(enabled)
+
+    # ── Persistencia ──────────────────────────────────────────────────────────
+    def to_dict(self) -> dict:
+        return {
+            "project_name": self.project_name,
+            "default_pad": self.default_pad,
+            "overlay_enabled": self.overlay_enabled,
+            "buttons": [asdict(b) for b in self.buttons],
+            "video_sources": [asdict(v) for v in self.video_sources],
+            "active_source_idx": self.active_source_idx,
+            "clips": [asdict(c) for c in self.clips],
+            "presentation": [asdict(p) for p in self.presentation],
+        }
+
+    def from_dict(self, data: dict):
+        self.project_name    = data.get("project_name", "Sin título")
+        self.default_pad     = data.get("default_pad", 5.0)
+        self.overlay_enabled = data.get("overlay_enabled", False)
+        self.buttons         = [Button(**b) for b in data.get("buttons", [])]
+        self.video_sources   = [VideoSource(**v) for v in data.get("video_sources", [])]
+        self.active_source_idx = data.get("active_source_idx", -1)
+        self.clips           = [Clip(**c) for c in data.get("clips", [])]
+        self.presentation    = [PresentationItem(**p) for p in data.get("presentation", [])]
+        self.buttons_changed.emit()
+        self.clips_changed.emit()
+        self.presentation_changed.emit()
+        self.sources_changed.emit()
+        if self._active_source():
+            vs = self._active_source()
+            self.active_source_changed.emit(vs.path, vs.name)
+        self.project_changed.emit(self.project_name)
+
+    def save_to_file(self, path: str) -> bool:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"[state] save error: {e}"); return False
+
+    def load_from_file(self, path: str) -> bool:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.from_dict(json.load(f))
+            return True
+        except Exception as e:
+            print(f"[state] load error: {e}"); return False
+
+
+state = AppState()

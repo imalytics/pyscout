@@ -1,0 +1,503 @@
+"""
+ClipTimeline rediseñado estilo NLE profesional:
+- Regla de tiempo arriba con timestamps del video fuente
+- Playhead vertical que cruza toda la altura (regla + track)
+- Click en playhead (fuera del clip) → arrastrar playhead
+- Click dentro del clip → arrastrar todo el rectángulo
+- Click en handle izquierdo/derecho → redimensionar
+"""
+import time
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, Signal, QSize, QPoint
+from PySide6.QtGui import QPainter, QBrush, QPen, QColor, QPixmap, QFont
+
+from utils.theme_helpers import ACCENT, ACCENT2, ACCENT3, BG0, BG1, BG2, BG3, TEXT2, TEXT3, BORDER, BORDER2
+
+
+# ── ScrubBar (barra de progreso del video principal) ──────────────────────────
+
+class ScrubBar(QWidget):
+    seek_requested = Signal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(18)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._duration = 1.0
+        self._position = 0.0
+        self._dragging = False
+        self._bg_cache = None
+        self.setStyleSheet("background: transparent;")
+
+    def set_duration(self, d: float):
+        self._duration = max(d, 0.001)
+        self._bg_cache = None
+        self.update()
+
+    def set_position(self, p: float):
+        if not self._dragging:
+            self._position = max(0.0, p)
+            self.update()
+
+    def _pos_from_x(self, x):
+        return max(0.0, min(1.0, x / max(self.width(), 1))) * self._duration
+
+    def mousePressEvent(self, e):
+        self._dragging = True
+        t = self._pos_from_x(e.position().x())
+        self._position = t
+        self.seek_requested.emit(t)
+        self.update()
+
+    def mouseMoveEvent(self, e):
+        if self._dragging:
+            t = self._pos_from_x(e.position().x())
+            self._position = t
+            self.seek_requested.emit(t)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._dragging = False
+
+    def resizeEvent(self, e):
+        self._bg_cache = None
+        super().resizeEvent(e)
+
+    def paintEvent(self, e):
+        if self._bg_cache is None or self._bg_cache.size() != self.size():
+            pm = QPixmap(self.size())
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            cy = self.height() // 2
+            p.setBrush(QBrush(QColor(str(BG3))))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, cy - 3, self.width(), 6, 3, 3)
+            p.end()
+            self._bg_cache = pm
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cy = h // 2
+        p.drawPixmap(0, 0, self._bg_cache)
+        pct = self._position / self._duration if self._duration > 0 else 0
+        fw = int(pct * w)
+        if fw > 1:
+            p.setBrush(QBrush(QColor(str(ACCENT))))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(0, cy - 2, fw, 4)
+        # Handle: diamond shape
+        hx = int(pct * w)
+        p.setBrush(QBrush(QColor(str(ACCENT3))))
+        p.setPen(Qt.PenStyle.NoPen)
+        from PySide6.QtGui import QPolygon
+        from PySide6.QtCore import QPoint
+        diamond = QPolygon([
+            QPoint(hx, cy - 6),
+            QPoint(hx + 5, cy),
+            QPoint(hx, cy + 6),
+            QPoint(hx - 5, cy),
+        ])
+        p.drawPolygon(diamond)
+
+
+# ── ClipTimeline estilo NLE ───────────────────────────────────────────────────
+
+def _fmt_video_time(sec: float) -> str:
+    """Formato MM:SS para la regla de tiempo."""
+    if sec < 0:
+        sec = 0
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+class ClipTimeline(QWidget):
+    scrub_requested = Signal(float)   # tiempo absoluto del video
+    start_changed   = Signal(float)   # offset desde timestamp
+    end_changed     = Signal(float)
+
+    WINDOW_LEVELS = [4, 6, 10, 16, 30, 60, 120, 180, 300, 600]
+    DEFAULT_ZOOM  = 5   # 60s — ventana más amplia por defecto
+
+    RULER_H  = 22   # altura de la regla de tiempo
+    TRACK_H  = 36   # altura del track del clip
+    HANDLE_W = 12   # semiancho del handle
+    SNAP_PX  = 10   # distancia de snap del handler al playhead
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        total_h = self.RULER_H + self.TRACK_H + 16  # +16 para etiquetas abajo
+        self.setFixedHeight(total_h)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setStyleSheet("background: transparent;")
+
+        self._zoom_idx      = self.DEFAULT_ZOOM
+        self._timestamp     = 0.0       # tiempo absoluto del registro
+        self._start_pct     = 0.15
+        self._end_pct       = 0.85
+        self._playhead_pct  = 0.5
+        self._dragging      = None      # 'start'|'end'|'body'|'playhead'|None
+
+        # Para body drag
+        self._drag_start_x  = 0.0
+        self._drag_start_sp = 0.0
+        self._drag_start_ep = 0.0
+
+        # Throttle de seek
+        self._last_seek     = 0.0
+        self.SEEK_MS        = 0.016
+
+        # Cache del fondo (regla + track vacío)
+        self._bg_cache  = None
+        self._last_zoom = -1
+        self._last_size = QSize()
+
+    # ── Propiedades ───────────────────────────────────────────────────────────
+
+    @property
+    def window_sec(self) -> float:
+        return self.WINDOW_LEVELS[self._zoom_idx]
+
+    @property
+    def start_sec(self) -> float:
+        ws = self.window_sec
+        return self._timestamp + self._start_pct * ws - ws / 2
+
+    @property
+    def end_sec(self) -> float:
+        ws = self.window_sec
+        return self._timestamp + self._end_pct * ws - ws / 2
+
+    @property
+    def duration(self) -> float:
+        return max(0.1, self.end_sec - self.start_sec)
+
+    # ── Control público ───────────────────────────────────────────────────────
+
+    def zoom_in(self):
+        if self._zoom_idx > 0:
+            s, e = self.start_sec, self.end_sec
+            self._zoom_idx -= 1
+            ws = self.window_sec
+            self._start_pct = max(0.0, min(1.0, (s - self._timestamp + ws/2) / ws))
+            self._end_pct   = max(0.0, min(1.0, (e - self._timestamp + ws/2) / ws))
+            self._bg_cache  = None
+            self.update()
+
+    def zoom_out(self):
+        if self._zoom_idx < len(self.WINDOW_LEVELS) - 1:
+            s, e = self.start_sec, self.end_sec
+            self._zoom_idx += 1
+            ws = self.window_sec
+            self._start_pct = max(0.0, min(1.0, (s - self._timestamp + ws/2) / ws))
+            self._end_pct   = max(0.0, min(1.0, (e - self._timestamp + ws/2) / ws))
+            self._bg_cache  = None
+            self.update()
+
+    def reset(self, timestamp: float, start_off=-5.0, end_off=5.0):
+        self._timestamp   = timestamp
+        self._zoom_idx    = self.DEFAULT_ZOOM
+        ws = self.window_sec
+        self._start_pct   = max(0.0, min(1.0, (start_off + ws/2) / ws))
+        self._end_pct     = max(0.0, min(1.0, (end_off   + ws/2) / ws))
+        self._playhead_pct = 0.5
+        self._dragging    = None
+        self._bg_cache    = None
+        self.update()
+
+    def update_playhead(self, current_time: float):
+        # Freeze playhead while dragging clip handles — user uses it as reference
+        if self._dragging in ('playhead', 'start', 'end', 'body'):
+            return
+        ws  = self.window_sec
+        off = current_time - self._timestamp
+        new_pct = max(0.0, min(1.0, (off + ws/2) / ws))
+        if abs(new_pct - self._playhead_pct) > 0.001:
+            self._playhead_pct = new_pct
+            self.update()
+
+    # ── Seek throttled ────────────────────────────────────────────────────────
+
+    def _seek(self, t: float):
+        now = time.monotonic()
+        if now - self._last_seek >= self.SEEK_MS:
+            self._last_seek = now
+            self.scrub_requested.emit(max(0.0, t))
+
+    # ── Hit test ─────────────────────────────────────────────────────────────
+
+    def _hit_test(self, x: float, y: float):
+        """
+        Determina qué elemento está bajo el cursor.
+        y se usa para distinguir si el click es en la regla (playhead siempre)
+        o en el track (puede ser handle, body, o playhead).
+        """
+        w  = self.width()
+        sw = self._start_pct    * w
+        ew = self._end_pct      * w
+        ph = self._playhead_pct * w
+
+        # Click en la regla → siempre playhead
+        if y < self.RULER_H:
+            return 'playhead'
+
+        # Click en el track
+        if abs(x - sw) <= self.HANDLE_W + 2:
+            return 'start'
+        if abs(x - ew) <= self.HANDLE_W + 2:
+            return 'end'
+        if sw + self.HANDLE_W < x < ew - self.HANDLE_W:
+            return 'body'
+        # Fuera del clip: playhead
+        return 'playhead'
+
+    # ── Mouse events ──────────────────────────────────────────────────────────
+
+    def mousePressEvent(self, e):
+        x = e.position().x()
+        y = e.position().y()
+        hit = self._hit_test(x, y)
+        self._dragging      = hit
+        self._drag_start_x  = x
+        self._drag_start_sp = self._start_pct
+        self._drag_start_ep = self._end_pct
+        # Seek inmediato solo al clickear en regla o fuera del clip
+        if hit == 'playhead':
+            pct = max(0.0, min(1.0, x / max(self.width(), 1)))
+            self._playhead_pct = pct
+            t = self._timestamp + pct * self.window_sec - self.window_sec/2
+            self._seek(t)
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        if not self._dragging:
+            return
+        x   = e.position().x()
+        pct = max(0.0, min(1.0, x / max(self.width(), 1)))
+        ws  = self.window_sec
+
+        if self._dragging == 'start':
+            new_pct = max(0.0, min(pct, self._end_pct - 0.04))
+            # Snap to playhead (stronger magnetism)
+            snap_pct = self.SNAP_PX / max(self.width(), 1)
+            if abs(new_pct - self._playhead_pct) < snap_pct:
+                new_pct = self._playhead_pct
+            self._start_pct = new_pct
+            self._seek(self.start_sec)
+            self.start_changed.emit(self.start_sec - self._timestamp)
+
+        elif self._dragging == 'end':
+            new_pct = min(1.0, max(pct, self._start_pct + 0.04))
+            # Snap to playhead (stronger magnetism)
+            snap_pct = self.SNAP_PX / max(self.width(), 1)
+            if abs(new_pct - self._playhead_pct) < snap_pct:
+                new_pct = self._playhead_pct
+            self._end_pct = new_pct
+            self._seek(self.end_sec)
+            self.end_changed.emit(self.end_sec - self._timestamp)
+
+        elif self._dragging == 'body':
+            dx_pct   = (x - self._drag_start_x) / max(self.width(), 1)
+            width_pct = self._drag_start_ep - self._drag_start_sp
+            new_sp = max(0.0, min(1.0 - width_pct, self._drag_start_sp + dx_pct))
+            new_ep = new_sp + width_pct
+            # Magnetismo: snap start o end del clip al playhead
+            snap_pct = self.SNAP_PX / max(self.width(), 1)
+            if abs(new_sp - self._playhead_pct) < snap_pct:
+                new_sp = self._playhead_pct
+                new_ep = new_sp + width_pct
+            elif abs(new_ep - self._playhead_pct) < snap_pct:
+                new_ep = self._playhead_pct
+                new_sp = new_ep - width_pct
+            self._start_pct = max(0.0, new_sp)
+            self._end_pct   = min(1.0, new_ep)
+            self._seek(self.start_sec)
+            self.start_changed.emit(self.start_sec - self._timestamp)
+            self.end_changed.emit(self.end_sec - self._timestamp)
+
+        elif self._dragging == 'playhead':
+            self._playhead_pct = pct
+            t = self._timestamp + pct * ws - ws/2
+            self._seek(t)
+
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._dragging = None
+
+    def resizeEvent(self, e):
+        self._bg_cache = None
+        super().resizeEvent(e)
+
+    # ── Rendering ─────────────────────────────────────────────────────────────
+
+    def _build_bg(self) -> QPixmap:
+        """Renderiza la regla de tiempo + track vacío (parte estática)."""
+        w  = self.width()
+        rh = self.RULER_H
+        th = self.TRACK_H
+        ws = self.window_sec
+        ts = self._timestamp  # tiempo central
+
+        # Crear pixmap con devicePixelRatio correcto para HiDPI
+        device_ratio = self.devicePixelRatioF()
+        pm = QPixmap(int(w * device_ratio), int(self.height() * device_ratio))
+        pm.setDevicePixelRatio(device_ratio)
+        pm.fill(Qt.GlobalColor.transparent)
+        p  = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        # ── Fondo de la regla ─────────────────────────────────────────────────
+        p.setBrush(QBrush(QColor(str(BG2))))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(0, 0, w, rh)
+        # Línea inferior de la regla
+        p.setPen(QPen(QColor(str(BG3)), 1))
+        p.drawLine(0, rh - 1, w, rh - 1)
+
+        # ── Marcas de tiempo en la regla ──────────────────────────────────────
+        # Calcular intervalo de marcas basado en ventana
+        if ws <= 8:
+            interval = 1.0
+        elif ws <= 20:
+            interval = 2.0
+        elif ws <= 60:
+            interval = 5.0
+        else:
+            interval = 10.0
+
+        font_ruler = QFont("Segoe UI", 10)  # Aumentado de 8 a 10
+        font_ruler.setWeight(QFont.Weight.Medium)
+        p.setFont(font_ruler)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)  # Antialiasing para texto
+
+        # Tiempo de inicio de la ventana
+        win_start = ts - ws / 2
+        win_end   = ts + ws / 2
+
+        # Primera marca (redondeada al intervalo)
+        import math
+        first_mark = math.ceil(win_start / interval) * interval
+
+        t = first_mark
+        while t <= win_end + interval:
+            x_mark = int((t - win_start) / ws * w)
+            if 0 <= x_mark <= w:
+                # Marca mayor
+                p.setPen(QPen(QColor(str(TEXT3)), 1))
+                p.drawLine(x_mark, rh - 7, x_mark, rh - 1)
+                # Etiqueta de tiempo
+                label = _fmt_video_time(t)
+                p.setPen(QPen(QColor(str(TEXT2))))
+                p.drawText(x_mark + 3, rh - 9, label)
+
+            # Marcas menores (4 divisiones entre marcas)
+            for sub in range(1, 4):
+                t_sub  = t + sub * interval / 4
+                x_sub  = int((t_sub - win_start) / ws * w)
+                if 0 <= x_sub <= w:
+                    p.setPen(QPen(QColor(str(BG3)), 1))
+                    p.drawLine(x_sub, rh - 4, x_sub, rh - 1)
+            t += interval
+
+        # ── Track ─────────────────────────────────────────────────────────────
+        track_y = rh
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(str(BG0))))
+        p.drawRect(0, track_y, w, th)
+
+        p.end()
+        return pm
+
+    def paintEvent(self, e):
+        cur_size = QSize(self.width(), self.height())
+        if (self._bg_cache is None
+                or self._last_zoom != self._zoom_idx
+                or self._last_size != cur_size
+                or self._last_zoom == -1):
+            self._bg_cache  = self._build_bg()
+            self._last_zoom = self._zoom_idx
+            self._last_size = cur_size
+
+        p  = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        w  = self.width()
+        rh = self.RULER_H
+        th = self.TRACK_H
+
+        sx = int(self._start_pct    * w)
+        ex = int(self._end_pct      * w)
+        ph = int(self._playhead_pct * w)
+
+        # 1. Fondo cacheado (regla + track vacío)
+        p.drawPixmap(0, 0, self._bg_cache)
+
+        # 2. Sombras fuera del clip en el track
+        track_y = rh
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(0, 0, 0, 120)))
+        p.drawRect(0, track_y, sx, th)
+        if ex < w:
+            p.drawRect(ex, track_y, w - ex, th)
+
+        # 3. Rectángulo del clip
+        clip_fill = QColor(str(ACCENT))
+        clip_fill.setAlpha(50)
+        p.setBrush(QBrush(clip_fill))
+        p.setPen(QPen(QColor(str(ACCENT)), 1))
+        p.drawRect(sx, track_y, ex - sx, th)
+
+        # 4. Handle izquierdo
+        lc = QColor("white") if self._dragging == "start" else QColor(str(ACCENT))
+        p.setBrush(QBrush(lc))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(sx, track_y, self.HANDLE_W, th)
+        p.setPen(QPen(QColor(0, 0, 0, 80), 2))
+        p.drawLine(sx + 6, track_y + 8, sx + 6, track_y + th - 8)
+
+        # 5. Handle derecho
+        rc = QColor("white") if self._dragging == "end" else QColor(str(ACCENT))
+        p.setBrush(QBrush(rc))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(ex - self.HANDLE_W, track_y, self.HANDLE_W, th)
+        p.setPen(QPen(QColor(0, 0, 0, 80), 2))
+        p.drawLine(ex - 6, track_y + 8, ex - 6, track_y + th - 8)
+
+        # 6. Playhead — línea naranja que cruza regla + track completo
+        ph_color = QColor(str(ACCENT3)) if self._dragging == 'playhead' else QColor(240, 240, 240)
+        p.setPen(QPen(ph_color, 1))
+        p.drawLine(ph, 0, ph, rh + th)
+
+        # Cabeza del playhead — pequeño rectángulo
+        p.setBrush(QBrush(ph_color))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(ph - 5, 0, 10, 6)
+
+        # 7. Etiquetas de tiempo del clip debajo del track
+        label_y = rh + th + 13
+        ws = self.window_sec
+        s_off = self._start_pct * ws - ws/2
+        e_off = self._end_pct   * ws - ws/2
+        sign  = lambda v: "+" if v >= 0 else ""
+
+        font = QFont("Segoe UI", 10)  # Aumentado de 8 a 10
+        p.setFont(font)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)  # Antialiasing para texto
+
+        p.setPen(QPen(QColor(str(ACCENT) if self._dragging == "start" else str(TEXT2))))
+        p.drawText(max(0, sx - 20), label_y, f"{sign(s_off)}{s_off:.1f}s")
+
+        p.setPen(QPen(QColor(str(TEXT2))))
+        p.drawText(w//2 - 15, label_y, f"{self.duration:.1f}s")
+
+        p.setPen(QPen(QColor(str(ACCENT) if self._dragging == "end" else str(TEXT2))))
+        p.drawText(min(w - 44, ex - 5), label_y, f"{sign(e_off)}{e_off:.1f}s")

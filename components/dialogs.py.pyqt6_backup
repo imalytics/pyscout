@@ -1,0 +1,127 @@
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QTextEdit, QPushButton, QWidget
+)
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
+from utils.theme_helpers import BG1, BG2, ACCENT, TEXT2, TEXT3, BORDER2
+from styles.theme import CLIP_COLORS
+
+
+class ColorDot(QWidget):
+    def __init__(self, color: str, selected: bool = False, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(24, 24)
+        self._color    = color
+        self._selected = selected
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_selected(self, v: bool):
+        self._selected = v
+        self.update()
+
+    def paintEvent(self, e):
+        from PyQt6.QtGui import QPainter, QBrush, QPen
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QBrush(QColor(self._color)))
+        if self._selected:
+            p.setPen(QPen(QColor("white"), 2))
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(2, 2, 20, 20)
+
+
+class ClipEditDialog(QDialog):
+    def __init__(self, name: str, note: str, color: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Editar clip")
+        self.setFixedWidth(420)
+        self.setModal(True)
+        self.setStyleSheet(f"background-color: {BG1}; border-radius: 10px;")
+
+        self._color = color
+        self._dots  = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # Nombre
+        lbl_name = QLabel("NOMBRE DEL CLIP")
+        lbl_name.setStyleSheet(f"color:{TEXT3}; font-size:10px; font-weight:600; letter-spacing:0.8px;")
+        layout.addWidget(lbl_name)
+
+        self._name_input = QLineEdit(name)
+        self._name_input.setStyleSheet(f"background:{BG2}; color:#f0f0f0; border:1px solid #333; border-radius:6px; padding:8px 10px;")
+        layout.addWidget(self._name_input)
+
+        # Color
+        lbl_color = QLabel("COLOR")
+        lbl_color.setStyleSheet(f"color:{TEXT3}; font-size:10px; font-weight:600; letter-spacing:0.8px;")
+        layout.addWidget(lbl_color)
+
+        color_row = QHBoxLayout()
+        color_row.setSpacing(8)
+        for c in CLIP_COLORS:
+            dot = ColorDot(c, selected=(c == color))
+            dot.mousePressEvent = lambda e, col=c: self._select_color(col)
+            color_row.addWidget(dot)
+            self._dots.append((c, dot))
+        color_row.addStretch()
+        layout.addLayout(color_row)
+
+        # Nota
+        lbl_note = QLabel("NOTA")
+        lbl_note.setStyleSheet(f"color:{TEXT3}; font-size:10px; font-weight:600; letter-spacing:0.8px;")
+        layout.addWidget(lbl_note)
+
+        self._note_input = QTextEdit(note)
+        self._note_input.setFixedHeight(80)
+        self._note_input.setStyleSheet(f"background:{BG2}; color:#f0f0f0; border:1px solid #333; border-radius:6px; padding:8px 10px;")
+        self._note_input.setPlaceholderText("Agregar nota sobre este clip…")
+        layout.addWidget(self._note_input)
+
+        # Botones
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.setStyleSheet(f"background:{BG2}; color:#888; border:1px solid #333; border-radius:6px; padding:7px 16px;")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Guardar")
+        save.setObjectName("primary")
+        save.clicked.connect(self.accept)
+        btn_row.addWidget(cancel)
+        btn_row.addWidget(save)
+        layout.addLayout(btn_row)
+
+    def _select_color(self, color: str):
+        self._color = color
+        for c, dot in self._dots:
+            dot.set_selected(c == color)
+
+    @property
+    def name(self) -> str:
+        return self._name_input.text().strip()
+
+    @property
+    def note(self) -> str:
+        return self._note_input.toPlainText().strip()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Slide up animation
+        from PyQt6.QtCore import QPropertyAnimation, QRect, QEasingCurve
+        geo = self.geometry()
+        start = QRect(geo.x(), geo.y() + 30, geo.width(), geo.height())
+        end   = geo
+        self._anim = QPropertyAnimation(self, b"geometry")
+        self._anim.setDuration(200)
+        self._anim.setStartValue(start)
+        self._anim.setEndValue(end)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.start()
+
+    @property
+    def color(self) -> str:
+        return self._color

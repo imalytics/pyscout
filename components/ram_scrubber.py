@@ -1,0 +1,120 @@
+"""
+RamScrubber: pre-carga frames como QPixmap en RAM/GPU.
+Durante el scrub, setPixmap() es una operación de textura GPU instantánea.
+"""
+import os
+from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QPixmap
+from utils.ffmpeg import extract_frames, delete_frame_dir
+
+
+class FrameLoader(QThread):
+    """Thread que carga frames JPEG → QPixmap sin bloquear la UI."""
+    progress  = Signal(int)        # 0-100
+    finished  = Signal(list, str, float)  # pixmaps, tmp_dir, fps
+    error     = Signal(str)
+
+    def __init__(self, video_path, start_sec, duration, fps=15, width=960):
+        super().__init__()
+        self.video_path = video_path
+        self.start_sec  = start_sec
+        self.duration   = duration
+        self.fps        = fps
+        self.width      = width
+
+    def run(self):
+        try:
+            paths, tmp_dir, fps = extract_frames(
+                self.video_path, self.start_sec, self.duration,
+                fps=self.fps, width=self.width
+            )
+            pixmaps = []
+            total = len(paths)
+            for i, path in enumerate(paths):
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    pixmaps.append(pm)
+                self.progress.emit(int((i + 1) / max(total, 1) * 100))
+
+            self.finished.emit(pixmaps, tmp_dir, float(fps))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class RamScrubber:
+    """
+    Gestiona el ciclo de vida de los frames en RAM.
+    overlay_label: QLabel que se muestra encima del video durante el scrub.
+    """
+    def __init__(self, overlay_label: QLabel):
+        self._label      = overlay_label
+        self._pixmaps    = []
+        self._tmp_dir    = None
+        self._start_sec  = 0.0
+        self._fps        = 15.0
+        self._loader     = None
+        self._ready      = False
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    def load(self, video_path: str, start_sec: float, duration: float,
+             on_progress=None, on_ready=None, on_error=None):
+        """Inicia la carga de frames en background."""
+        self._cleanup_frames()
+        self._ready = False
+
+        self._loader = FrameLoader(video_path, start_sec, duration)
+        if on_progress:
+            self._loader.progress.connect(on_progress)
+        self._loader.finished.connect(
+            lambda pms, d, fps: self._on_loaded(pms, d, fps, on_ready))
+        if on_error:
+            self._loader.error.connect(on_error)
+        self._loader.start()
+        self._start_sec = start_sec
+
+    def _on_loaded(self, pixmaps, tmp_dir, fps, on_ready):
+        self._pixmaps   = pixmaps
+        self._tmp_dir   = tmp_dir
+        self._fps       = fps
+        self._ready     = True
+        if on_ready:
+            on_ready(len(pixmaps))
+
+    def seek(self, time_sec: float):
+        """
+        Muestra el frame correspondiente a time_sec.
+        setPixmap() en Qt es una copia de textura GPU: ~0.05ms.
+        """
+        if not self._ready or not self._pixmaps:
+            return
+        idx = round((time_sec - self._start_sec) * self._fps)
+        idx = max(0, min(len(self._pixmaps) - 1, idx))
+        pm  = self._pixmaps[idx]
+        # Escalar al tamaño del label manteniendo aspect ratio
+        label_size = self._label.size()
+        scaled = pm.scaled(label_size, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.FastTransformation)
+        self._label.setPixmap(scaled)
+        self._label.setVisible(True)
+
+    def hide(self):
+        self._label.setVisible(False)
+
+    def _cleanup_frames(self):
+        self._pixmaps = []
+        self._ready   = False
+        if self._tmp_dir:
+            delete_frame_dir(self._tmp_dir)
+            self._tmp_dir = None
+        if self._loader and self._loader.isRunning():
+            self._loader.quit()
+            self._loader.wait(1000)
+        self._loader = None   # reset para que _on_tl_scrub pueda detectar estado
+
+    def cleanup(self):
+        self._cleanup_frames()
+        self.hide()
