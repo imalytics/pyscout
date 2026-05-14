@@ -2,7 +2,7 @@
 import os, sys, threading, tempfile
 from PySide6.QtCore import QObject, Signal
 
-CURRENT_VERSION = "1.0.1"
+CURRENT_VERSION = "1.0.2"
 UPDATE_URL = "https://imahernandez.github.io/pyscout/version.json"
 
 
