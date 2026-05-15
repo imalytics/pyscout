@@ -509,7 +509,7 @@ class ClipDetailDialog(QDialog):
 
         # ── Control bar con navegación y controles ───────────────────────────
         ctrl = QWidget()
-        ctrl.setFixedHeight(40)  # Reducido a 40px para maximizar video
+        ctrl.setFixedHeight(44)
         ctrl.setStyleSheet(f"""
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {BG2}, stop:1 {BG1});
             border-top: 1px solid {BORDER2};
@@ -647,11 +647,11 @@ class ClipDetailDialog(QDialog):
         self._fullscreen_btn.setFixedSize(36, 36)  # Botón compacto
         self._fullscreen_btn.setToolTip(_("Modo pantalla completa"))
         self._fullscreen_btn.setStyleSheet(f"""
-            QPushButton {{ 
-                background: transparent; 
-                color: {TEXT2}; 
+            QPushButton {{
+                background: transparent;
+                color: {TEXT2};
                 border: none;
-                font-size: {fs(24)}px;  # Unicode más grande
+                font-size: {fs(24)}px;
                 padding: 0;
             }}
             QPushButton:hover {{ color: {ACCENT}; }}
@@ -937,19 +937,24 @@ class ClipDetailDialog(QDialog):
 
     def _navigate(self, delta):
         """Navegar al clip anterior/siguiente sin cerrar la ventana."""
-        # Encontrar índice actual
         try:
             idx = next(i for i, it in enumerate(self._all_items) if it.id == self._item.id)
         except StopIteration:
             return
-        
-        # Calcular nuevo índice
+
         new_idx = idx + delta
         if not (0 <= new_idx < len(self._all_items)):
-            return  # Fuera de rango
-        
-        # Cargar nuevo clip
+            return
+
         new_item = self._all_items[new_idx]
+
+        # Para imágenes no hay recarga in-place (la preview es un QLabel estático).
+        # Cerrar con _nav_delta y dejar que _edit_item reabra el dialog para el nuevo item.
+        if self._item.type == "image" or new_item.type == "image":
+            self._nav_delta = delta
+            self.accept()
+            return
+
         self._load_item(new_item)
     
     def _load_item(self, item: PresentationItem):
@@ -1786,10 +1791,24 @@ class PresentationRowWidget(QWidget):
         self.edit_requested.emit(self._item.id)
 
     def contextMenuEvent(self, e):
+        # Obtener el container de selección
+        container = self.parentWidget()
+        while container is not None and not isinstance(container, DragDropListWidget):
+            container = container.parentWidget()
+
+        selected_ids = set(container._selected_ids) if container else {self._item.id}
+        # Asegurar que el item clickeado esté en la selección
+        if self._item.id not in selected_ids:
+            selected_ids = {self._item.id}
+        n = len(selected_ids)
+
         menu = QMenu(self)
         act_detail = menu.addAction(_("Abrir detalle"))
         act_dup    = menu.addAction(_("Duplicar registro"))
         act_vis    = menu.addAction(_("Cambiar visibilidad"))
+        act_color  = menu.addAction(
+            _("Cambiar color ({} clips)").format(n) if n > 1 else _("Cambiar color")
+        )
         menu.addSeparator()
         act_del    = menu.addAction(_("Eliminar registro"))
         chosen = menu.exec(e.globalPos())
@@ -1799,8 +1818,63 @@ class PresentationRowWidget(QWidget):
             self.duplicate_requested.emit(self._item.id)
         elif chosen == act_vis:
             self._toggle_visibility()
+        elif chosen == act_color:
+            self._pick_color_for(selected_ids)
         elif chosen == act_del:
             self.delete_requested.emit(self._item.id)
+
+    def _pick_color_for(self, item_ids: set):
+        """Abre un selector de color y aplica el color elegido a todos los items indicados."""
+        PALETTE = [
+            "#2A2A30",
+            "#C9A44A", "#4A90D9", "#27AE60", "#9B59B6",
+            "#E67E22", "#E74C3C", "#1ABC9C", "#8BC34A",
+        ]
+        # Color actual del item clickeado como referencia visual
+        current = self._item.color or PALETTE[0]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Elegir color"))
+        dlg.setModal(True)
+        dlg.setFixedSize(320, 80)
+        dlg.setStyleSheet(f"background:{BG2};")
+
+        layout = QHBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        chosen_color = [None]
+
+        for c in PALETTE:
+            btn = QPushButton()
+            btn.setFixedSize(32, 32)
+            border = f"2px solid {TEXT0}" if c == current else "1px solid rgba(255,255,255,0.15)"
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{c}; border:{border}; border-radius:3px; }}"
+                f"QPushButton:hover {{ border:2px solid {ACCENT}; }}"
+            )
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            def _pick(checked=False, color=c):
+                chosen_color[0] = color
+                dlg.accept()
+
+            btn.clicked.connect(_pick)
+            layout.addWidget(btn)
+
+        dlg.exec()
+
+        if chosen_color[0] is None:
+            return
+
+        state.push_undo()
+        color = chosen_color[0]
+        items = state.presentations[state.active_pres_idx]
+        for item in items:
+            if item.id in item_ids:
+                item.color = color
+        state._sync_active_slot()
+        state.presentation_changed.emit()
 
     def _start_drag(self):
         # Find DragDropListWidget container (may be several parents up)

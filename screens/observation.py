@@ -1326,22 +1326,6 @@ class ButtonConfigDialog(QDialog):
     # Teclas reservadas para la pantalla completa
     RESERVED = {"F", "M", "ESCAPE", " "}
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        QApplication.instance().installEventFilter(self)
-
-    def hideEvent(self, e):
-        super().hideEvent(e)
-        QApplication.instance().removeEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        from PySide6.QtCore import QEvent
-        from PySide6.QtWidgets import QWidget
-        if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease, QEvent.Type.ShortcutOverride):
-            if obj is not self and (not isinstance(obj, QWidget) or not self.isAncestorOf(obj)):
-                return True
-        return False
-
     # Colores oscuros disponibles para botones
     BTN_COLORS = [
         ("#1c1c1c", "Sin acento"),
@@ -1502,7 +1486,6 @@ class ButtonConfigDialog(QDialog):
         hotkey_input.setStyleSheet(
             f"background:{BG2}; color:{TEXT0}; border:1.5px solid {TEXT3};"
             f" border-radius:0; padding:4px 8px; font-size:{fs(13)}px; font-weight:600;"
-            f" QLineEdit:focus {{ border-color:{ACCENT}; }}"
         )
         rl.addWidget(hotkey_input)
 
@@ -1560,22 +1543,31 @@ class ButtonConfigDialog(QDialog):
 
 
 class _HotkeyInput(QLineEdit):
-    """Input que captura una sola tecla y rechaza las reservadas."""
+    """Input que captura una sola tecla. Sin overrides virtuales C++ — compatible con Nuitka."""
     def __init__(self, current: str, reserved: set, parent=None):
         super().__init__(parent)
-        self.setText(current)
         self._reserved = {r.upper() for r in reserved}
+        self._saved = (current or "").upper()
         self.setMaxLength(1)
+        self.setText(self._saved)
+        self.setPlaceholderText("—")
+        # focusChanged: limpiar al ganar foco para que el próximo keypress sea reemplazo directo
+        # (sin esto, setMaxLength(1) con "P" existente bloquea la inserción de cualquier nuevo char)
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().focusChanged.connect(self._on_focus_change)
+        self.textEdited.connect(self._on_edited)
 
-    def keyPressEvent(self, e):
-        text = e.text().upper()
-        k = e.key()
-        if k == Qt.Key.Key_Backspace or k == Qt.Key.Key_Delete:
-            self.clear()
-            return
-        if k == Qt.Key.Key_Escape:
-            self.clear()
-            return
-        if not text or text in self._reserved:
-            return   # ignorar teclas reservadas y sin representación
-        self.setText(text)
+    def _on_focus_change(self, old_widget, new_widget):
+        if new_widget is self:
+            self.setText("")
+        elif old_widget is self and not self.text():
+            self.setText(self._saved)
+
+    def _on_edited(self, text: str):
+        upper = text.upper()
+        if upper in self._reserved:
+            self.setText("")
+        else:
+            self._saved = upper
+            if text != upper:
+                self.setText(upper)
