@@ -31,7 +31,7 @@ except ImportError:
 
 POLAR_ORG_ID = "a3608077-32b8-47d8-a701-8572f59ff9fd"
 POLAR_PRODUCT_ID = "9109ea62-ae1c-4548-8820-761e589ab8e2"
-POLAR_CHECKOUT_URL = "https://buy.polar.sh/polar_cl_sW9U1zjSOQZ7vhN4JzRPyrLJyy4q7VKz8IE6N0CQfvq"
+POLAR_CHECKOUT_URL = "https://polar.sh/checkout/polar_c_jFRXBrcZ7BX5NqIDRk1pItlSgOZFGP1pjf4iP0f5QWT"
 API = "https://api.polar.sh/v1/customer-portal/license-keys"
 
 TRIAL_SECONDS = 7 * 86400   # 7 días
