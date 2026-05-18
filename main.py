@@ -6,7 +6,7 @@ import sys
 import os
 import ctypes
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.3"
 
 # ── Rutas unificadas de recursos ─────────────────────────────────────────────
 try:

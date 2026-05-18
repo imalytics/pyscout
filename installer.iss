@@ -1,8 +1,8 @@
 #define MyAppName      "PyScout"
-#define MyAppVersion   "1.0.2"
+#define MyAppVersion   "1.0.3"
 #define MyAppPublisher "PyScout"
 #define MyAppExeName   "main.exe"
-#define MyAppURL       "https://buy.polar.sh/polar_cl_sW9U1zjSOQZ7vhN4JzRPyrLJyy4q7VKz8IE6N0CQfvq"
+#define MyAppURL       "https://polar.sh/checkout/polar_c_jFRXBrcZ7BX5NqIDRk1pItlSgOZFGP1pjf4iP0f5QWT"
 #define SourceDir      "build\main.dist"
 
 [Setup]
