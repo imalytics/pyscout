@@ -1,4 +1,4 @@
-import os, re, sys, subprocess, tempfile
+import os, re, sys, subprocess, tempfile, threading, queue, time
 from typing import Optional, Callable
 
 
@@ -259,6 +259,7 @@ def render_presentation(
             "-filter_complex_script", fc_path,
             *map_args,
             "-c:v", "libx264", "-preset", "fast", "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
             *audio_args,
             "-movflags", "+faststart",
             out,
@@ -286,16 +287,46 @@ def render_presentation(
             **extra,
         )
 
+        # Leer stderr en un hilo auxiliar para permitir timeout de stall.
+        # Si FFmpeg se cuelga sin cerrarse, detectamos la inactividad y lo matamos.
+        stderr_q: queue.Queue = queue.Queue()
+
+        def _pipe_reader(pipe, q):
+            try:
+                while True:
+                    chunk = pipe.read(256)
+                    if not chunk:
+                        break
+                    q.put(chunk)
+            finally:
+                q.put(None)  # centinela: pipe cerrado
+
+        _t = threading.Thread(target=_pipe_reader, args=(proc.stderr, stderr_q), daemon=True)
+        _t.start()
+
+        STALL_TIMEOUT = 120  # segundos sin progreso antes de matar FFmpeg
         stderr_buf = ""
         partial = b""
+        last_progress = time.monotonic()
+
         while True:
-            chunk = proc.stderr.read(256)
-            if not chunk:
+            try:
+                chunk = stderr_q.get(timeout=1.0)
+            except queue.Empty:
+                if time.monotonic() - last_progress > STALL_TIMEOUT:
+                    proc.kill()
+                    raise RuntimeError(
+                        "FFmpeg no respondió por más de 2 minutos. "
+                        "El proceso fue terminado para evitar un bloqueo."
+                    )
+                continue
+
+            if chunk is None:
                 break
+
             partial += chunk
-            # Split on \r or \n — FFmpeg uses \r for progress lines
+            # Split on \r o \n — FFmpeg usa \r para las líneas de progreso
             while b"\r" in partial or b"\n" in partial:
-                # Find earliest separator
                 ri = partial.find(b"\r")
                 ni = partial.find(b"\n")
                 if ri == -1: ri = len(partial)
@@ -310,8 +341,11 @@ def render_presentation(
                 if line.strip():
                     stderr_buf += line + "\n"
                     m = re.search(r"time=(\d+:\d+:\d+[\.\d]*)", line)
-                    if m and progress_cb:
-                        progress_cb(m.group(1))
+                    if m:
+                        last_progress = time.monotonic()
+                        if progress_cb:
+                            progress_cb(m.group(1))
+
         proc.wait()
 
         print(f"[FFmpeg returncode] {proc.returncode}")
@@ -358,6 +392,48 @@ def extract_frames(video_path, start_sec, duration, fps=15, width=960):
     paths = sorted([os.path.join(tmp_dir, f)
                     for f in os.listdir(tmp_dir) if f.endswith(".jpg")])
     return paths, tmp_dir, fps
+
+
+def export_clip(clip_dict: dict, output_path: str,
+                crf: int = 20, fps: int = 30,
+                mute_audio: bool = False,
+                show_overlay: bool = False,
+                clip_name: str = "") -> bool:
+    """Exportar un clip individual con configuración de calidad."""
+    ffmpeg = _short_path(get_ffmpeg())
+    start  = float(clip_dict.get("clip_start", 0.0))
+    dur    = float(clip_dict.get("clip_dur",   5.0))
+    vid    = _short_path(clip_dict["video_path"])
+    out    = os.path.normpath(output_path)
+
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+
+    if mute_audio:
+        audio_args = ["-an"]
+    else:
+        audio_args = ["-c:a", "aac", "-b:a", "192k"] if has_audio(vid) else ["-an"]
+
+    vf = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+    if show_overlay and clip_name:
+        escaped = clip_name.replace("'", "\\'").replace(":", "\\:").replace(",", "\\,")
+        vf += (
+            f",drawtext=text='{escaped}':fontcolor=white:fontsize=32"
+            f":x=20:y=20:box=1:boxcolor=black@0.5:boxborderw=6"
+        )
+
+    args = [
+        ffmpeg, "-y",
+        "-ss", str(max(0.0, start)), "-t", str(max(0.1, dur)), "-i", vid,
+        "-c:v", "libx264", "-preset", "fast", "-crf", str(crf),
+        "-r", str(fps),
+        "-pix_fmt", "yuv420p",
+        "-vf", vf,
+        *audio_args,
+        "-movflags", "+faststart",
+        out,
+    ]
+    rc, _err = _run_ffmpeg(args)
+    return rc == 0
 
 
 def delete_frame_dir(tmp_dir: str):

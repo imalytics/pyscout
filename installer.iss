@@ -1,5 +1,5 @@
 #define MyAppName      "PyScout"
-#define MyAppVersion   "1.0.3"
+#define MyAppVersion   "1.0.4"
 #define MyAppPublisher "PyScout"
 #define MyAppExeName   "main.exe"
 #define MyAppURL       "https://polar.sh/checkout/polar_c_jFRXBrcZ7BX5NqIDRk1pItlSgOZFGP1pjf4iP0f5QWT"

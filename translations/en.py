@@ -50,6 +50,8 @@ STRINGS: dict[str, str] = {
     # ── Help menu ─────────────────────────────────────────────────────────
     "Ayuda": "Help",
     "¿Cómo funciona?": "How does it work?",
+    "Reiniciar tour de bienvenida": "Restart welcome tour",
+    "Feedback": "Feedback",
     "Acerca de PyScout": "About PyScout",
 
     # ── Project dialogs ───────────────────────────────────────────────────
@@ -113,6 +115,94 @@ STRINGS: dict[str, str] = {
     # ── StartDialog ───────────────────────────────────────────────────────
     "RECIENTES": "RECENT",
     "Crear proyecto": "New project",
+    # ── components/onboarding.py — tour UI ───────────────────────────────────
+    "PASO {} DE {}": "STEP {} OF {}",
+    "Finalizar": "Finish",
+    "Siguiente  →": "Next  →",
+
+    # ── Onboarding tour steps ─────────────────────────────────────────────────
+    "Bienvenido a PyScout": "Welcome to PyScout",
+    "Este tour rápido te muestra las 3 pantallas y las funciones clave. "
+    "Avanzá con Siguiente o saltealo con ✕.":
+        "This quick tour shows you the 3 main screens and key features. "
+        "Press Next to advance or ✕ to skip.",
+    "Hacé clic aquí para cargar el video del partido. "
+    "Podés tener hasta 10 videos abiertos al mismo tiempo, cada uno en su pestaña.":
+        "Click here to load the match video. "
+        "You can have up to 10 videos open at once, each in its own tab.",
+    "Crear botones de categoría": "Create category buttons",
+    "Con el '+' creás un botón por tipo de jugada: PNR, Transición, Tiro libre... "
+    "Asignales color y tecla de atajo para registrar sin mouse.":
+        "Use '+' to create a button for each play type: PNR, Transition, Free throw... "
+        "Assign a color and a hotkey to record without using the mouse.",
+    "Pantalla Ajuste": "Adjust screen",
+    "Cuando tengas registros, pasá a Ajuste para afinar el inicio y fin "
+    "de cada clip con el timeline interactivo.":
+        "Once you have records, go to Adjust to fine-tune the start and end "
+        "of each clip with the interactive timeline.",
+    "Aquí aparecerán tus registros": "Your records will appear here",
+    "Cada clip marcado en Observación se lista aquí. "
+    "Seleccioná uno y ajustá sus bordes en el timeline.":
+        "Every clip marked in Observation is listed here. "
+        "Select one and adjust its edges on the timeline.",
+    "Pantalla Presentación": "Presentation screen",
+    "Desde Ajuste, enviás clips a Presentación para construir el video final.":
+        "From Adjust, you send clips to Presentation to build the final video.",
+    "Aquí aparecerán tus clips": "Your clips will appear here",
+    "Los clips de tu presentación se listan aquí. "
+    "Arrastrá las filas para reordenarlos.":
+        "Your presentation clips are listed here. "
+        "Drag rows to reorder them.",
+    "Intercalar imágenes": "Insert images",
+    "Agregá imágenes estáticas —pizarrones, diagramas— entre los clips "
+    "para enriquecer tu presentación táctica.":
+        "Add static images —whiteboards, diagrams— between clips "
+        "to enrich your tactical presentation.",
+    "Producí un MP4 con todos los clips concatenados, listo para el equipo. "
+    "Elegís resolución, calidad, transiciones y si incluir audio.":
+        "Produce an MP4 with all clips concatenated, ready for your team. "
+        "Choose resolution, quality, transitions, and whether to include audio.",
+    "Autoguardado y deshacer": "Autosave and undo",
+    "Cada cambio se guarda automáticamente. "
+    "Ctrl+Z deshace cualquier acción. "
+    "Usá F11 para pantalla completa durante las presentaciones.":
+        "Every change is saved automatically. "
+        "Ctrl+Z undoes any action. "
+        "Use F11 for full screen during presentations.",
+
+    # ── components/feedback.py ────────────────────────────────────────────────
+    "Tu opinión": "Your feedback",
+    "¿Cómo quedó tu película?": "How did your movie turn out?",
+    "¿Cómo vas con PyScout?": "How are you finding PyScout?",
+    "Tu feedback nos ayuda a mejorar.": "Your feedback helps us improve.",
+    "SUGERENCIAS (OPCIONAL)": "SUGGESTIONS (OPTIONAL)",
+    "¿Qué mejorarías? ¿Qué extrañás? ¿Qué funciona perfecto?":
+        "What would you improve? What's missing? What works great?",
+    "Ahora no": "Not now",
+    "Enviar feedback": "Send feedback",
+    "Muy malo": "Very bad",
+    "Malo": "Bad",
+    "Regular": "Average",
+    "Bueno": "Good",
+    "¡Excelente!": "Excellent!",
+
+    # ── app.py — What's new ───────────────────────────────────────────────────
+    "Novedades": "What's new",
+    "¡PyScout actualizado!": "PyScout updated!",
+    "Esto es lo que hay de nuevo en esta versión:": "Here's what's new in this version:",
+    "Entendido": "Got it",
+    "Versión {}": "Version {}",
+    "Corrección en el ajuste de clips desde el detalle de presentación":
+        "Fixed clip adjustment from the presentation detail",
+    "Tour de bienvenida interactivo de 10 pasos":
+        "Interactive 10-step welcome tour",
+    "Feedback integrado — calificá la app después de producir una película":
+        "Built-in feedback — rate the app after producing a movie",
+    "Logging automático en Documentos/PyScout/pyscout.log":
+        "Automatic logging to Documents/PyScout/pyscout.log",
+    "Dialog de error cuando ocurre un crash inesperado":
+        "Error dialog when an unexpected crash occurs",
+
     "Activar licencia": "Activate license",
     "Prueba gratuita": "Free trial",
     "Días restantes: {}": "Days remaining: {}",
@@ -147,6 +237,8 @@ STRINGS: dict[str, str] = {
         "Pad: time before/after the click  ·  Hotkey: key to record without mouse",
     "Personalizado": "Custom",
     "Escribí una tecla (no F, M, Esc, Space)": "Press a key (not F, M, Esc, Space)",
+    "🎲 Hotkeys random": "🎲 Random hotkeys",
+    "Asigna una tecla distinta a cada botón de forma aleatoria": "Assigns a unique random key to each button",
     "Hotkey duplicada": "Duplicate hotkey",
     "La tecla '{}' está asignada a más de un botón.\nCambiá una antes de guardar.":
         "Key '{}' is assigned to more than one button.\nChange one before saving.",
@@ -393,7 +485,7 @@ STRINGS: dict[str, str] = {
         "No. PyScout works completely offline. The only connection needed "
         "is when activating or renewing the license.",
     "¿Dónde se guardan los proyectos?": "Where are projects saved?",
-    "En Documentos / PyScout / Proyectos. Cada proyecto es un único archivo .scout "
+    "En Documentos / PyScout / Projects. Cada proyecto es un único archivo .scout "
     "que contiene todos tus botones, registros y listados.":
         "In Documents / PyScout / Projects. Each project is a single .scout file "
         "that contains all your buttons, records, and playlists.",
@@ -482,4 +574,55 @@ STRINGS: dict[str, str] = {
     "El archivo de licencia está dañado. Activá una licencia.":
         "The license file is corrupted. Activate a license.",
     "Activá tu licencia para continuar.": "Activate your license to continue.",
+
+    # ── Strings faltantes — detectados en auditoría mayo 2026 ─────────────────
+
+    # Licencias — course keys
+    "Acceso de curso activado — {} días": "Course access activated — {} days",
+    "Acceso de curso — {} días": "Course access — {} days",
+    "Código ya activado — {} días restantes": "Already activated — {} days remaining",
+
+    # Observation — botonera
+    "Borrar botón": "Delete button",
+    "Cambiar color": "Change color",
+    "Cambiar color ({} clips)": "Change color ({} clips)",
+    "Cargar preset de deporte": "Load sport preset",
+    "Cargar preset...": "Load preset...",
+    "Reemplazar botonera actual": "Replace current button board",
+    "Elegí un deporte:": "Pick a sport:",
+    "El botón '{}' tiene {}.\n¿Borrar igual?": "Button '{}' has {}.\nDelete anyway?",
+
+    # Observation — clips y exportación
+    "Agregar a presentación": "Add to presentation",
+    "Ya está en la presentación": "Already in presentation",
+    "{} en presentación": "{} in presentation",
+    "Abrir en Ajuste": "Open in Adjust",
+    "Exportar clip": "Export clip",
+    "Guardar clip como": "Save clip as",
+    "Exportando {}...": "Exporting {}...",
+    "Exportado: {}": "Exported: {}",
+    "Error al exportar": "Export error",
+    "Preparando exportación...": "Preparing export...",
+    "Cargar": "Load",
+
+    # Presentation
+    "Sin clips visibles en la presentación": "No visible clips in the presentation",
+    "El listado está vacío\nAgregá clips desde Ajuste": "The list is empty\nAdd clips from Adjust",
+    "Vista previa": "Preview",
+    "Imagen no encontrada": "Image not found",
+    "{} clip{}": "{} clip{}",
+
+    # Video player — resume dialog
+    "Reanudar": "Resume",
+    "¿Continuar desde {}?": "Resume from {}?",
+
+    # Feedback
+    "Tu opinión nos ayuda a mejorar PyScout.": "Your feedback helps us improve PyScout.",
+    "¡Gracias por tu feedback!": "Thanks for your feedback!",
+
+    # Color picker
+    "Elegir color": "Choose color",
+
+    "  No encontrado — reinstalá PyScout": "  Not found — reinstall PyScout",
+    "▶  Vista previa": "▶  Preview",
 }

@@ -250,7 +250,7 @@ class AppState(QObject):
         self.buttons_changed.emit()
 
     # ── Clips ─────────────────────────────────────────────────────────────────
-    def add_clip(self, button: Button, time_sec: float) -> Clip:
+    def add_clip(self, button: Button, time_sec: float, video_duration: float = 0.0) -> Clip:
         self.push_undo()
         from utils.time_utils import fmt_time
         pad_b = getattr(button, 'pad_before', -1); pad_b = pad_b if pad_b >= 0 else self.default_pad
@@ -259,6 +259,9 @@ class AppState(QObject):
         base_label = button.label
         count = sum(1 for c in self.clips if c.category == base_label)
         display_name = f"{base_label} #{count + 1}"
+        end = time_sec + pad_a
+        if video_duration > 0:
+            end = min(end, video_duration)
         clip = Clip(
             name=display_name,
             category=base_label,
@@ -267,7 +270,7 @@ class AppState(QObject):
             video_name=self.active_video_name,
             timestamp=fmt_time(time_sec), time_sec=time_sec,
             start_sec=max(0, time_sec - pad_b),
-            end_sec=time_sec + pad_a,
+            end_sec=end,
         )
         self.clips.append(clip)
         self.clips_changed.emit()

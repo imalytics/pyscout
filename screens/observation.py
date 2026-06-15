@@ -1,10 +1,12 @@
+import warnings
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QDialog, QSpinBox,
-    QLineEdit, QFileDialog, QApplication
+    QLineEdit, QFileDialog, QApplication, QMenu, QMessageBox
 )
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, QSize, QThread, Signal as _Signal
+from PySide6.QtGui import QKeyEvent, QAction
 
 from components.video_player import MpvWidget
 from components.timeline import ScrubBar
@@ -14,7 +16,7 @@ from utils.theme_helpers import BG0, BG1, BG2, BG3, BG4, ACCENT, ACCENT2, ACCENT
 from styles.theme import CLIP_COLORS, fs, fs
 from utils.time_utils import fmt_time
 from utils.i18n import _
-from icons_helper import play_icon, pause_icon, mute_icon, volume_icon, fullscreen_icon
+from icons_helper import play_icon, pause_icon, mute_icon, volume_icon, fullscreen_icon, plus_icon, settings_icon
 
 
 def _make_svg_placeholder(svg_bytes: bytes, text: str, font_size_px) -> QWidget:
@@ -132,6 +134,38 @@ class AddButtonDialog(QDialog):
         return False
 
 
+class _ClipExportThread(QThread):
+    done = _Signal(bool, str)
+
+    def __init__(self, clip_dict: dict, output_path: str,
+                 crf: int = 20, fps: int = 30,
+                 mute_audio: bool = False,
+                 show_overlay: bool = False,
+                 clip_name: str = ""):
+        super().__init__()
+        self._clip         = clip_dict
+        self._path         = output_path
+        self._crf          = crf
+        self._fps          = fps
+        self._mute_audio   = mute_audio
+        self._show_overlay = show_overlay
+        self._clip_name    = clip_name
+
+    def run(self):
+        try:
+            from utils.ffmpeg import export_clip
+            ok = export_clip(
+                self._clip, self._path,
+                crf=self._crf, fps=self._fps,
+                mute_audio=self._mute_audio,
+                show_overlay=self._show_overlay,
+                clip_name=self._clip_name,
+            )
+            self.done.emit(ok, self._path if ok else "")
+        except Exception as ex:
+            self.done.emit(False, str(ex)[:200])
+
+
 class ObservationScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -186,54 +220,44 @@ class ObservationScreen(QWidget):
             """))
         hh.addStretch()
 
-        add_btn = QPushButton("+")
-        add_btn.setFixedSize(26, 26)
-        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_btn.setToolTip(_("Nuevo botón"))
-        add_btn.setStyleSheet(f"""
+        _btn_ss = f"""
             QPushButton {{
                 background: transparent;
-                color: {TEXT2};
                 border: 1px solid {TEXT3};
                 border-radius: 2px;
-                font-size: {fs(15)}px;
-                font-weight: 400;
                 padding: 0;
             }}
             QPushButton:hover {{
-                color: {ACCENT};
                 border-color: {ACCENT};
+                background: rgba(201,164,74,0.08);
             }}
             QPushButton:pressed {{
-                background: rgba(201,164,74,0.1);
+                background: rgba(201,164,74,0.15);
             }}
-        """)
+        """
+        add_btn = QPushButton()
+        add_btn.setFixedSize(26, 26)
+        add_btn.setIcon(plus_icon(size=(12, 12), color=str(TEXT2)))
+        add_btn.setIconSize(QSize(12, 12))
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setToolTip(_("Nuevo botón"))
+        add_btn.setStyleSheet(_btn_ss)
+        add_btn.enterEvent = lambda e, b=add_btn: b.setIcon(plus_icon(size=(12, 12), color=str(ACCENT)))
+        add_btn.leaveEvent = lambda e, b=add_btn: b.setIcon(plus_icon(size=(12, 12), color=str(TEXT2)))
         add_btn.clicked.connect(self._show_add_modal)
+        self._add_btn = add_btn
         hh.addWidget(add_btn)
         hh.addSpacing(4)
 
-        cfg_btn = QPushButton("⚙")
+        cfg_btn = QPushButton()
         cfg_btn.setFixedSize(26, 26)
+        cfg_btn.setIcon(settings_icon(size=(13, 13), color=str(TEXT2)))
+        cfg_btn.setIconSize(QSize(13, 13))
         cfg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cfg_btn.setToolTip(_("Configurar botones"))
-        cfg_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {TEXT2};
-                border: 1px solid {TEXT3};
-                border-radius: 2px;
-                font-size: {fs(13)}px;
-                font-family: 'Segoe UI Symbol','Arial Unicode MS',sans-serif;
-                padding: 0;
-            }}
-            QPushButton:hover {{
-                color: {ACCENT};
-                border-color: {ACCENT};
-            }}
-            QPushButton:pressed {{
-                background: rgba(201,164,74,0.1);
-            }}
-        """)
+        cfg_btn.setStyleSheet(_btn_ss)
+        cfg_btn.enterEvent = lambda e, b=cfg_btn: b.setIcon(settings_icon(size=(13, 13), color=str(ACCENT)))
+        cfg_btn.leaveEvent = lambda e, b=cfg_btn: b.setIcon(settings_icon(size=(13, 13), color=str(TEXT2)))
         cfg_btn.clicked.connect(self._show_btn_config)
         hh.addWidget(cfg_btn)
         ll.addWidget(hdr)
@@ -637,11 +661,38 @@ class ObservationScreen(QWidget):
     def _on_source_changed(self, path: str, name: str):
         self._rebuild_tabs()
         if not path:
+            self._video.stop()
             return
         vs = state._active_source()
         self._video.load(path)
-        if vs and vs.last_pos > 0:
-            self._video.file_loaded.connect(lambda: self._video.seek(vs.last_pos))
+        # Limpiar conexiones previas para evitar acumulación
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                self._video.file_loaded.disconnect()
+            except Exception:
+                pass
+        if vs and vs.last_pos > 30:
+            saved_pos = vs.last_pos
+            def _ask_resume():
+                try: self._video.file_loaded.disconnect(_ask_resume)
+                except Exception: pass
+                reply = QMessageBox.question(
+                    self, _("Reanudar"),
+                    _("¿Continuar desde {}?").format(fmt_time(saved_pos)),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._video.seek(saved_pos)
+            self._video.file_loaded.connect(_ask_resume)
+        elif vs and vs.last_pos > 0:
+            saved_pos = vs.last_pos
+            def _do_seek():
+                try: self._video.file_loaded.disconnect(_do_seek)
+                except Exception: pass
+                self._video.seek(saved_pos)
+            self._video.file_loaded.connect(_do_seek)
         self._video.show()
         self._placeholder.hide()
 
@@ -782,7 +833,7 @@ class ObservationScreen(QWidget):
         if not state.active_video_path:
             state.toast_requested.emit("Cargá un video primero")
             return
-        state.add_clip(btn, self._video.position)
+        state.add_clip(btn, self._video.position, self._video.duration)
 
     # ── Registros ─────────────────────────────────────────────────────────────
 
@@ -869,7 +920,12 @@ class ObservationScreen(QWidget):
         del_btn.clicked.connect(lambda checked, cid=clip.id: state.remove_clip(cid))
         rl.addWidget(del_btn)
 
-        row.mousePressEvent = lambda e, c=clip: self._seek_to_clip(c)
+        def _clip_press(e, c=clip):
+            if e.button() == Qt.MouseButton.RightButton:
+                self._show_clip_context_menu(c, e.globalPosition().toPoint())
+            else:
+                self._seek_to_clip(c)
+        row.mousePressEvent = _clip_press
         row.mouseDoubleClickEvent = lambda e, c=clip: self._edit_clip(c)
         return row, pres_ind
 
@@ -894,6 +950,64 @@ class ObservationScreen(QWidget):
         dlg = ClipEditDialog(clip.name, clip.note, clip.color, self)
         if dlg.exec():
             state.update_clip(clip.id, name=dlg.name, note=dlg.note, color=dlg.color)
+
+    def _show_clip_context_menu(self, clip: Clip, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{ background:{BG2}; border:1px solid {BORDER2}; padding:4px 0; color:{TEXT0}; }}
+            QMenu::item {{ padding:7px 20px; font-size:{fs(12)}px; }}
+            QMenu::item:selected {{ background:{BG3}; color:{ACCENT}; }}
+            QMenu::separator {{ height:1px; background:{BORDER}; margin:3px 0; }}
+        """)
+        act_export = QAction(_("Exportar clip"), menu)
+        act_export.triggered.connect(lambda: self._export_clip(clip))
+        menu.addAction(act_export)
+        menu.addSeparator()
+        act_adjust = QAction(_("Abrir en Ajuste"), menu)
+        act_adjust.triggered.connect(lambda: self._goto_adjust_for_clip(clip))
+        menu.addAction(act_adjust)
+        menu.exec(pos)
+
+    def _goto_adjust_for_clip(self, clip: Clip):
+        mw = self.window()
+        if hasattr(mw, '_goto_adjust'):
+            mw._goto_adjust(getattr(clip, 'category', clip.name))
+
+    def _export_clip(self, clip: Clip):
+        from components.dialogs import ClipExportSettingsDialog
+        dlg = ClipExportSettingsDialog(self)
+        if dlg.exec() != ClipExportSettingsDialog.DialogCode.Accepted:
+            return
+        import os
+        docs = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Exported")
+        os.makedirs(docs, exist_ok=True)
+        safe = clip.name.replace("/", "-").replace("\\", "-").replace(":", "-")
+        default = os.path.join(docs, f"{safe}.mp4")
+        out, _ = QFileDialog.getSaveFileName(
+            self, _("Guardar clip como"), default, "Video MP4 (*.mp4)"
+        )
+        if not out:
+            return
+        clip_dict = {
+            "video_path": clip.video_path,
+            "clip_start":  clip.start_sec,
+            "clip_dur":    max(0.1, clip.end_sec - clip.start_sec),
+        }
+        state.toast_requested.emit(_("Exportando {}...").format(clip.name))
+        self._export_thread = _ClipExportThread(
+            clip_dict, out,
+            crf=dlg.crf, fps=dlg.fps,
+            mute_audio=dlg.mute_audio,
+            show_overlay=dlg.show_overlay,
+            clip_name=clip.name,
+        )
+        def _on_done(ok, path):
+            if ok:
+                state.toast_requested.emit(_("Exportado: {}").format(os.path.basename(path)))
+            else:
+                state.toast_requested.emit(_("Error al exportar"))
+        self._export_thread.done.connect(_on_done)
+        self._export_thread.start()
 
 
 # ── Ventana fullscreen ─────────────────────────────────────────────────────────
@@ -1160,7 +1274,7 @@ class FullscreenObserver(QDialog):
         from store.state import state
         if not state.active_video_path:
             return
-        state.add_clip(btn, self._video.position)
+        state.add_clip(btn, self._video.position, self._video.duration)
 
     def _seek_recent_clip(self, clip):
         """Ir al clip reciente reutilizando la lógica del ObservationScreen."""
@@ -1323,10 +1437,35 @@ class FullscreenObserver(QDialog):
 # ── Modal de configuración de botones ────────────────────────────────────────
 
 class ButtonConfigDialog(QDialog):
-    # Teclas reservadas para la pantalla completa
     RESERVED = {"F", "M", "ESCAPE", " "}
 
-    # Colores oscuros disponibles para botones
+    SPORT_PRESETS = {
+        "Fútbol": [
+            ("Gol",           "#1a3d2b"), ("Tiro al arco",  "#1a3d2b"),
+            ("Corner",        "#4a3000"), ("Falta",         "#5c1a1a"),
+            ("Offside",       "#5c1a1a"), ("Contraataque",  "#1e3a5f"),
+            ("Presión",       "#3d1a4a"), ("Penal",         "#5c1a1a"),
+        ],
+        "Básquet": [
+            ("Pick & Roll",   "#1e3a5f"), ("Triple",        "#1a3d2b"),
+            ("Drive",         "#4a3000"), ("Asistencia",    "#1e3a5f"),
+            ("Robo",          "#5c1a1a"), ("Rebote",        "#3d1a4a"),
+            ("Bloqueo",       "#1a3a3a"), ("Pérdida",       "#5c1a1a"),
+        ],
+        "Vóley": [
+            ("Saque",         "#4a3000"), ("Recepción",     "#1a3d2b"),
+            ("Armado",        "#1e3a5f"), ("Ataque",        "#1a3d2b"),
+            ("Bloqueo",       "#3d1a4a"), ("Defensa",       "#1a3a3a"),
+            ("Error propio",  "#5c1a1a"),
+        ],
+        "Handball": [
+            ("Gol",           "#1a3d2b"), ("Tiro libre",    "#4a3000"),
+            ("Contraataque",  "#1e3a5f"), ("7 metros",      "#5c1a1a"),
+            ("Bloqueo",       "#3d1a4a"), ("Robo",          "#1a3a3a"),
+            ("Exclusión",     "#5c1a1a"),
+        ],
+    }
+
     BTN_COLORS = [
         ("#1c1c1c", "Sin acento"),
         ("#1e3a5f", "Azul"),
@@ -1359,9 +1498,20 @@ class ButtonConfigDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
+        title_row = QHBoxLayout()
         title = QLabel(_("Configurar botones"))
         title.setStyleSheet(f"color:{TEXT0}; font-size:{fs(14)}px; font-weight:700;")
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        presets_btn = QPushButton(_("Cargar preset..."))
+        presets_btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{ACCENT}; border:1px solid {ACCENT2};"
+            f" border-radius:2px; padding:4px 12px; font-size:{fs(11)}px; font-weight:600; }}"
+            f"QPushButton:hover {{ background:rgba(201,164,74,0.1); border-color:{ACCENT}; }}"
+        )
+        presets_btn.clicked.connect(self._open_preset_chooser)
+        title_row.addWidget(presets_btn)
+        layout.addLayout(title_row)
 
         subtitle = QLabel(_("Pad: tiempo antes/después del click  ·  Hotkey: tecla para registrar sin mouse"))
         subtitle.setStyleSheet(f"color:{TEXT3}; font-size:{fs(11)}px;")
@@ -1405,6 +1555,16 @@ class ButtonConfigDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch()
+        rand_btn = QPushButton(_("🎲 Hotkeys random"))
+        rand_btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{TEXT2}; border:1px solid {BORDER2};"
+            f" border-radius:2px; padding:7px 14px; font-size:{fs(11)}px; }}"
+            f"QPushButton:hover {{ color:{TEXT0}; border-color:rgba(255,255,255,0.25); }}"
+        )
+        rand_btn.setToolTip(_("Asigna una tecla distinta a cada botón de forma aleatoria"))
+        rand_btn.clicked.connect(self._assign_random_hotkeys)
+        btns.addWidget(rand_btn)
+        btns.addSpacing(8)
         close_btn = QPushButton(_("Listo"))
         close_btn.setStyleSheet(
             f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
@@ -1415,6 +1575,20 @@ class ButtonConfigDialog(QDialog):
         close_btn.clicked.connect(self._save_and_close)
         btns.addWidget(close_btn)
         layout.addLayout(btns)
+
+    def _assign_random_hotkeys(self):
+        import random
+        import string
+        reserved_single = {r for r in self.RESERVED if len(r) == 1}
+        pool = [c for c in string.ascii_uppercase if c not in reserved_single]
+        random.shuffle(pool)
+        for i, btn in enumerate(state.buttons):
+            if btn.id not in self._rows:
+                continue
+            _, _, _, hotkey_input, _ = self._rows[btn.id]
+            key = pool[i] if i < len(pool) else ""
+            hotkey_input._saved = key
+            hotkey_input.setText(key)
 
     def _make_row(self, btn):
         from utils.theme_helpers import BG2, BG3, BG4, TEXT0, TEXT1, TEXT2, TEXT3, ACCENT, BORDER2, DANGER
@@ -1505,10 +1679,33 @@ class ButtonConfigDialog(QDialog):
         return row
 
     def _delete_btn(self, bid):
+        btn = next((b for b in state.buttons if b.id == bid), None)
+        if btn:
+            clip_count = sum(1 for c in state.clips
+                             if getattr(c, 'category', c.name) == btn.label)
+            pres_count = sum(
+                1 for pres in state.presentations for item in pres
+                if getattr(item, 'category', item.name) == btn.label
+            )
+            if clip_count > 0 or pres_count > 0:
+                parts = []
+                if clip_count:
+                    parts.append(_("{} clip{}").format(clip_count, "s" if clip_count != 1 else ""))
+                if pres_count:
+                    parts.append(_("{} en presentación").format(pres_count))
+                reply = QMessageBox.question(
+                    self, _("Borrar botón"),
+                    _("El botón '{}' tiene {}.\n¿Borrar igual?").format(
+                        btn.label, " y ".join(parts)
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
         state.remove_button(bid)
         if bid in self._rows:
             del self._rows[bid]
-        # Rebuild
         self.accept()
         ButtonConfigDialog(self.parent()).exec()
 
@@ -1540,6 +1737,111 @@ class ButtonConfigDialog(QDialog):
                 btn.label = new_label
         state.buttons_changed.emit()
         self.accept()
+
+
+    def _open_preset_chooser(self):
+        from utils.theme_helpers import BG1, BG2, BG3, ACCENT, ACCENT2, ACCENT3, TEXT0, TEXT1, TEXT2, TEXT3, BORDER2
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Cargar preset de deporte"))
+        dlg.setFixedWidth(360)
+        dlg.setModal(True)
+        dlg.setStyleSheet(f"background:{BG1}; color:{TEXT0};")
+        lo = QVBoxLayout(dlg)
+        lo.setContentsMargins(20, 20, 20, 20)
+        lo.setSpacing(10)
+
+        lo.addWidget(QLabel(_("Elegí un deporte:"),
+            styleSheet=f"color:{TEXT0}; font-size:{fs(13)}px; font-weight:600;"))
+
+        btn_group = QWidget()
+        bg_lo = QVBoxLayout(btn_group)
+        bg_lo.setContentsMargins(0, 0, 0, 0)
+        bg_lo.setSpacing(6)
+        _selected = [None]
+
+        sport_btns = []
+        for sport in self.SPORT_PRESETS:
+            b = QPushButton(sport)
+            b.setCheckable(True)
+            b.setFixedHeight(34)
+            b.setStyleSheet(f"""
+                QPushButton {{ background:{BG2}; color:{TEXT1}; border:1px solid rgba(255,255,255,0.07);
+                    border-radius:3px; font-size:{fs(13)}px; text-align:left; padding:0 14px; }}
+                QPushButton:checked {{ background:{BG3}; color:{TEXT0}; border-color:{ACCENT}; }}
+                QPushButton:hover {{ background:{BG3}; }}
+            """)
+            def _pick(checked, s=sport, btn=b, others=sport_btns):
+                _selected[0] = s if checked else None
+                for ob in others:
+                    if ob is not btn:
+                        ob.setChecked(False)
+            b.toggled.connect(_pick)
+            sport_btns.append(b)
+            bg_lo.addWidget(b)
+        lo.addWidget(btn_group)
+
+        sep = QFrame(); sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background:rgba(255,255,255,0.06);")
+        lo.addWidget(sep)
+
+        replace_cb = QPushButton(_("Reemplazar botonera actual"))
+        replace_cb.setCheckable(True)
+        replace_cb.setChecked(False)
+        replace_cb.setStyleSheet(f"""
+            QPushButton {{ background:{BG2}; color:{TEXT2}; border:1px solid rgba(255,255,255,0.07);
+                border-radius:3px; font-size:{fs(11)}px; padding:5px 12px; text-align:left; }}
+            QPushButton:checked {{ color:{TEXT0}; border-color:{ACCENT2}; }}
+        """)
+        lo.addWidget(replace_cb)
+
+        btns_row = QHBoxLayout()
+        btns_row.addStretch()
+        cancel = QPushButton(_("Cancelar"))
+        cancel.setStyleSheet(f"QPushButton {{ background:transparent; color:{TEXT2}; border:none; padding:6px 16px; }}")
+        cancel.clicked.connect(dlg.reject)
+        btns_row.addWidget(cancel)
+        load = QPushButton(_("Cargar"))
+        load.setStyleSheet(
+            f"QPushButton {{ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            f"stop:0 {ACCENT3},stop:1 {ACCENT}); color:#1a1714; border:none;"
+            f" border-bottom:2px solid {ACCENT2}; border-radius:2px; padding:6px 18px;"
+            f" font-size:{fs(12)}px; font-weight:600; }}"
+            f"QPushButton:hover {{ background:{ACCENT3}; }}"
+        )
+        load.clicked.connect(dlg.accept)
+        btns_row.addWidget(load)
+        lo.addLayout(btns_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        sport = _selected[0]
+        if not sport:
+            return
+
+        buttons_def = self.SPORT_PRESETS[sport]
+        if replace_cb.isChecked():
+            for b in list(state.buttons):
+                state.remove_button(b.id)
+
+        for label, color in buttons_def:
+            if not any(b.label == label for b in state.buttons):
+                state.add_button(label, color)
+
+        # Guardar copia JSON en Documentos/PyScout/Botoneras/
+        import os, json
+        docs = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Buttons")
+        os.makedirs(docs, exist_ok=True)
+        preset_path = os.path.join(docs, f"{sport}.json")
+        try:
+            with open(preset_path, "w", encoding="utf-8") as f:
+                json.dump({"name": sport, "buttons": [
+                    {"label": lbl, "color": clr} for lbl, clr in buttons_def
+                ]}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        self.accept()
+        ButtonConfigDialog(self.parent()).exec()
 
 
 class _HotkeyInput(QLineEdit):

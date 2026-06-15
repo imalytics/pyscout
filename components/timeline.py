@@ -120,6 +120,7 @@ class ClipTimeline(QWidget):
     scrub_requested = Signal(float)   # tiempo absoluto del video
     start_changed   = Signal(float)   # offset desde timestamp
     end_changed     = Signal(float)
+    handle_released = Signal()        # el user soltó un handle (start/end/body)
 
     WINDOW_LEVELS = [4, 6, 10, 16, 30, 60, 120, 180, 300, 600]
     DEFAULT_ZOOM  = 5   # 60s — ventana más amplia por defecto
@@ -142,6 +143,7 @@ class ClipTimeline(QWidget):
         self._end_pct       = 0.85
         self._playhead_pct  = 0.5
         self._dragging      = None      # 'start'|'end'|'body'|'playhead'|None
+        self.setMouseTracking(True)
 
         # Para body drag
         self._drag_start_x  = 0.0
@@ -274,39 +276,48 @@ class ClipTimeline(QWidget):
             self._seek(t)
             self.update()
 
+    def _cursor_for_hit(self, hit: str):
+        if hit in ('start', 'end'):
+            return Qt.CursorShape.SizeHorCursor
+        if hit == 'body':
+            return Qt.CursorShape.OpenHandCursor
+        return Qt.CursorShape.CrossCursor
+
     def mouseMoveEvent(self, e):
-        if not self._dragging:
-            return
         x   = e.position().x()
+        y   = e.position().y()
         pct = max(0.0, min(1.0, x / max(self.width(), 1)))
         ws  = self.window_sec
 
+        if not self._dragging:
+            self.setCursor(self._cursor_for_hit(self._hit_test(x, y)))
+            return
+
         if self._dragging == 'start':
             new_pct = max(0.0, min(pct, self._end_pct - 0.04))
-            # Snap to playhead (stronger magnetism)
             snap_pct = self.SNAP_PX / max(self.width(), 1)
             if abs(new_pct - self._playhead_pct) < snap_pct:
                 new_pct = self._playhead_pct
             self._start_pct = new_pct
             self._seek(self.start_sec)
             self.start_changed.emit(self.start_sec - self._timestamp)
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
 
         elif self._dragging == 'end':
             new_pct = min(1.0, max(pct, self._start_pct + 0.04))
-            # Snap to playhead (stronger magnetism)
             snap_pct = self.SNAP_PX / max(self.width(), 1)
             if abs(new_pct - self._playhead_pct) < snap_pct:
                 new_pct = self._playhead_pct
             self._end_pct = new_pct
             self._seek(self.end_sec)
             self.end_changed.emit(self.end_sec - self._timestamp)
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
 
         elif self._dragging == 'body':
-            dx_pct   = (x - self._drag_start_x) / max(self.width(), 1)
+            dx_pct    = (x - self._drag_start_x) / max(self.width(), 1)
             width_pct = self._drag_start_ep - self._drag_start_sp
             new_sp = max(0.0, min(1.0 - width_pct, self._drag_start_sp + dx_pct))
             new_ep = new_sp + width_pct
-            # Magnetismo: snap start o end del clip al playhead
             snap_pct = self.SNAP_PX / max(self.width(), 1)
             if abs(new_sp - self._playhead_pct) < snap_pct:
                 new_sp = self._playhead_pct
@@ -319,6 +330,7 @@ class ClipTimeline(QWidget):
             self._seek(self.start_sec)
             self.start_changed.emit(self.start_sec - self._timestamp)
             self.end_changed.emit(self.end_sec - self._timestamp)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
         elif self._dragging == 'playhead':
             self._playhead_pct = pct
@@ -328,7 +340,13 @@ class ClipTimeline(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
+        was_handle = self._dragging in ('start', 'end', 'body')
         self._dragging = None
+        x = e.position().x()
+        y = e.position().y()
+        self.setCursor(self._cursor_for_hit(self._hit_test(x, y)))
+        if was_handle:
+            self.handle_released.emit()
 
     def resizeEvent(self, e):
         self._bg_cache = None

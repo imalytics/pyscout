@@ -4,7 +4,8 @@ from utils.i18n import _
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QTextEdit, QFrame, QScrollArea, QFileDialog, QMessageBox,
-    QWidget, QGraphicsOpacityEffect, QApplication
+    QWidget, QGraphicsOpacityEffect, QApplication,
+    QRadioButton, QButtonGroup, QCheckBox
 )
 from PySide6.QtCore import (
     Qt, Signal, QUrl, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSettings, QPoint
@@ -141,12 +142,12 @@ class StartDialog(QDialog):
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(1000)
         self._tick_timer.timeout.connect(self._tick)
-        if self._lic_type in ("trial", "grace"):
+        if self._lic_type in ("trial", "grace", "course"):
             self._tick_timer.start()
 
     def _tick(self):
         """Decrementa el contador local para mostrar el countdown sin recargar todo."""
-        if self._lic_type not in ("trial", "grace"):
+        if self._lic_type not in ("trial", "grace", "course"):
             self._tick_timer.stop()
             return
         self._lic_remaining = max(0, self._lic_remaining - 1)
@@ -366,7 +367,7 @@ class StartDialog(QDialog):
             if isinstance(w, QPushButton):
                 w.setEnabled(can_work)
         # License bar buttons
-        if self._lic_type in ("pro", "pro_offline"):
+        if self._lic_type in ("pro", "pro_offline", "course"):
             self._show_key_btn.setVisible(False)
             self._buy_btn.setVisible(False)
         elif self._lic_type == "dev":
@@ -449,6 +450,9 @@ class StartDialog(QDialog):
         r = self._lic_remaining
         if t == "pro":
             dot, text = "#27AE60", _("Licencia activa")
+        elif t == "course":
+            days = max(1, self._lic_remaining // 86400)
+            dot, text = "#27AE60", _("Acceso de curso — {} días").format(days)
         elif t == "pro_offline":
             hours = max(1, r // 3600)
             dot, text = "#E67E22", _("Pro (offline) — {}h de gracia").format(hours)
@@ -495,7 +499,7 @@ class StartDialog(QDialog):
     def _hide_key(self):
         self._key_input.setVisible(False); self._act_btn.setVisible(False); self._cancel_key.setVisible(False)
         self._key_input.clear()
-        if self._lic_type not in ("pro", "pro_offline", "dev"):
+        if self._lic_type not in ("pro", "pro_offline", "course", "dev"):
             self._show_key_btn.setVisible(True)
             self._buy_btn.setVisible(True)
 
@@ -621,7 +625,7 @@ class StartDialog(QDialog):
             docs = os.path.expanduser("~/Documents")
         else:
             docs = os.path.join(os.path.expanduser("~"), "Documents")
-        projects_dir = os.path.join(docs, "PyScout", "Proyectos")
+        projects_dir = os.path.join(docs, "PyScout", "Projects")
         os.makedirs(projects_dir, exist_ok=True)
 
         # Sanitizar nombre para filename
@@ -808,3 +812,128 @@ class StartDialog(QDialog):
         if hasattr(self, '_tick_timer'):
             self._tick_timer.stop()
         super().closeEvent(event)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ClipExportSettingsDialog
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ClipExportSettingsDialog(QDialog):
+    QUALITY = {
+        "Alta (60fps)":  {"crf": 18, "fps": 60, "hint": "1920×1080  ·  60fps  ·  ~70 MB/min"},
+        "Alta (30fps)":  {"crf": 18, "fps": 30, "hint": "1920×1080  ·  30fps  ·  ~50 MB/min"},
+        "Media (60fps)": {"crf": 23, "fps": 60, "hint": "1920×1080  ·  60fps  ·  ~35 MB/min"},
+        "Media (30fps)": {"crf": 23, "fps": 30, "hint": "1920×1080  ·  30fps  ·  ~20 MB/min"},
+        "Baja":          {"crf": 30, "fps": 30, "hint": "1920×1080  ·  30fps  ·  ~8 MB/min"},
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_("Exportar clip"))
+        self.setFixedWidth(420)
+        self.setModal(True)
+        self.setStyleSheet(f"background:{BG1};")
+
+        self.mute_audio   = False
+        self.crf          = 23
+        self.fps          = 30
+        self.show_overlay = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(10)
+
+        title = QLabel(_("Exportar clip"))
+        title.setStyleSheet(f"color:{TEXT0}; font-size:{fs(16)}px; font-weight:600;")
+        layout.addWidget(title)
+
+        # Calidad
+        q_lbl = QLabel(_("CALIDAD"))
+        q_lbl.setStyleSheet(f"color:{ACCENT}; font-size:{fs(9)}px; font-weight:700; letter-spacing:1.5px;")
+        layout.addWidget(q_lbl)
+
+        self._quality_group = QButtonGroup(self)
+        for label, info in self.QUALITY.items():
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            rl = QVBoxLayout(row)
+            rl.setContentsMargins(0, 2, 0, 2)
+            rl.setSpacing(1)
+            rb = QRadioButton(_(label))
+            rb.setStyleSheet(f"color:{TEXT0}; font-size:{fs(12)}px;")
+            rb.setProperty("crf", info["crf"])
+            rb.setProperty("fps", info["fps"])
+            if label == "Media (30fps)":
+                rb.setChecked(True)
+            self._quality_group.addButton(rb)
+            rl.addWidget(rb)
+            hint = QLabel(info["hint"])
+            hint.setStyleSheet(f"color:{TEXT3}; font-size:{fs(10)}px; padding-left:22px;")
+            rl.addWidget(hint)
+            layout.addWidget(row)
+
+        sep1 = QFrame()
+        sep1.setFixedHeight(1)
+        sep1.setStyleSheet("background:rgba(255,255,255,0.06);")
+        layout.addWidget(sep1)
+
+        # Opciones de video
+        v_lbl = QLabel(_("OPCIONES DE VIDEO"))
+        v_lbl.setStyleSheet(f"color:{ACCENT}; font-size:{fs(9)}px; font-weight:700; letter-spacing:1.5px;")
+        layout.addWidget(v_lbl)
+
+        self._overlay_cb = QCheckBox(_("Mostrar nombre del clip en el video"))
+        self._overlay_cb.setStyleSheet(f"color:{TEXT1}; font-size:{fs(12)}px;")
+        self._overlay_cb.setChecked(False)
+        layout.addWidget(self._overlay_cb)
+
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background:rgba(255,255,255,0.06);")
+        layout.addWidget(sep2)
+
+        # Audio
+        a_lbl = QLabel(_("OPCIONES DE AUDIO"))
+        a_lbl.setStyleSheet(f"color:{ACCENT}; font-size:{fs(9)}px; font-weight:700; letter-spacing:1.5px;")
+        layout.addWidget(a_lbl)
+
+        self._mute_cb = QCheckBox(_("Silenciar audio"))
+        self._mute_cb.setStyleSheet(f"color:{TEXT1}; font-size:{fs(12)}px;")
+        layout.addWidget(self._mute_cb)
+
+        sep3 = QFrame()
+        sep3.setFixedHeight(1)
+        sep3.setStyleSheet("background:rgba(255,255,255,0.06);")
+        layout.addWidget(sep3)
+
+        # Botones
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton(_("Cancelar"))
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{ background:transparent; color:{TEXT2};
+                border:1px solid {BORDER2}; padding:6px 16px; font-size:{fs(12)}px; }}
+            QPushButton:hover {{ color:{TEXT0}; border-color:{ACCENT}; }}
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton(_("Exportar"))
+        ok_btn.setStyleSheet(f"""
+            QPushButton {{ background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 {ACCENT3},stop:1 {ACCENT}); color:#1a1714;
+                border:none; border-bottom:2px solid {ACCENT2};
+                padding:6px 20px; font-size:{fs(12)}px; font-weight:600; }}
+            QPushButton:hover {{ background:{ACCENT3}; }}
+        """)
+        ok_btn.clicked.connect(self._accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+    def _accept(self):
+        checked = self._quality_group.checkedButton()
+        self.crf          = checked.property("crf") if checked else 23
+        self.fps          = checked.property("fps") if checked else 30
+        self.mute_audio   = self._mute_cb.isChecked()
+        self.show_overlay = self._overlay_cb.isChecked()
+        self.accept()

@@ -115,3 +115,9 @@ def eye_icon(size=(18, 18), color="#8C8C8C"):
 
 def eye_off_icon(size=(18, 18), color="#8C8C8C"):
     return get_icon("eye_off", color, size)
+
+def plus_icon(size=(14, 14), color="#8C8C8C"):
+    return get_icon("plus", color, size)
+
+def settings_icon(size=(14, 14), color="#8C8C8C"):
+    return get_icon("settings", color, size)

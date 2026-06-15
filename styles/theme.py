@@ -384,6 +384,15 @@ QMenu::separator {{
     height: 1px; background: {BORDER2}; margin: 3px 0;
 }}
 
+QToolTip {{
+    background: {BG3};
+    color: {TEXT0};
+    border: 1px solid {BORDER2};
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: {fs(12)}px;
+}}
+
 QCheckBox {{ color: {TEXT0}; spacing: 10px; font-size: {fs(13)}px; }}
 QCheckBox::indicator {{
     width: 16px; height: 16px;

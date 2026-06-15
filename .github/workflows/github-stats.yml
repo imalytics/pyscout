@@ -1,0 +1,77 @@
+name: GitHub Download Stats
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # cada 6 horas
+  workflow_dispatch:          # también ejecutable a mano desde Actions
+
+jobs:
+  record-stats:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch releases and store download counts
+        env:
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python3 << 'EOF'
+          import json, os, sys, urllib.request, urllib.error
+
+          # ── 1. GitHub API ─────────────────────────────────────────────────
+          gh_url = "https://api.github.com/repos/imalytics/pyscout/releases"
+          req = urllib.request.Request(
+              gh_url,
+              headers={"User-Agent": "pyscout-stats-bot", "Accept": "application/vnd.github+json"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  releases = json.loads(r.read())
+          except Exception as e:
+              print(f"GitHub API error: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          # ── 2. Construir filas ────────────────────────────────────────────
+          rows = []
+          for release in releases:
+              tag = release.get("tag_name", "")
+              for asset in release.get("assets", []):
+                  name  = asset.get("name", "").lower()
+                  count = asset.get("download_count", 0)
+                  if ".exe" in name or "setup" in name or "windows" in name:
+                      platform = "windows"
+                  elif ".dmg" in name or ".pkg" in name or "mac" in name or "osx" in name:
+                      platform = "macos"
+                  else:
+                      platform = "other"
+                  rows.append({"release_tag": tag, "platform": platform, "count": count})
+
+          if not rows:
+              print("No release assets found — nothing to insert.")
+              sys.exit(0)
+
+          print(f"Found {len(rows)} asset snapshots across {len(releases)} releases.")
+
+          # ── 3. Insertar en Supabase ───────────────────────────────────────
+          supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
+          service_key  = os.environ["SUPABASE_SERVICE_KEY"]
+
+          req = urllib.request.Request(
+              f"{supabase_url}/rest/v1/github_downloads",
+              data=json.dumps(rows).encode(),
+              headers={
+                  "apikey":        service_key,
+                  "Authorization": f"Bearer {service_key}",
+                  "Content-Type":  "application/json",
+                  "Prefer":        "return=minimal",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  print(f"Inserted {len(rows)} rows. HTTP {r.status}")
+          except urllib.error.HTTPError as e:
+              print(f"Supabase error {e.code}: {e.read().decode()}", file=sys.stderr)
+              sys.exit(1)
+
+          EOF

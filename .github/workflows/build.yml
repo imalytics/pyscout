@@ -31,8 +31,8 @@ jobs:
           --windows-console-mode=disable
           --company-name="PyScout"
           --product-name="PyScout"
-          --file-version="1.0.0.0"
-          --product-version="1.0.0.0"
+          --file-version="1.0.4.0"
+          --product-version="1.0.4.0"
           --include-data-files=ico.ico=ico.ico
           --include-data-files=ico_4k.png=ico_4k.png
           --include-data-files=splash.png=splash.png
@@ -133,3 +133,27 @@ jobs:
             artifacts/PyScout-Setup.exe
             artifacts/PyScout-macOS.zip
           generate_release_notes: true
+
+      - name: Checkout repo for Pages update
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update docs/version.json
+        run: |
+          TAG="${{ github.ref_name }}"
+          VER="${TAG#v}"
+          mkdir -p docs
+          cat > docs/version.json << EOF
+          {
+            "version": "$VER",
+            "download_url": "https://github.com/imahernandez/pyscout/releases/download/$TAG/PyScout-Setup.exe",
+            "changelog": "Ver release notes en GitHub"
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/version.json
+          git diff --staged --quiet || git commit -m "chore: bump docs/version.json to $VER [skip ci]"
+          git push

@@ -9,7 +9,7 @@ Si hay inconsistencia (una dice trial, otra dice expired), se usa la más restri
 
 from __future__ import annotations
 
-import base64, datetime, hashlib, json, os, platform, sys, uuid
+import base64, datetime, hashlib, hmac as _hmac, json, os, platform, secrets, sys, uuid
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -36,6 +36,9 @@ API = "https://api.polar.sh/v1/customer-portal/license-keys"
 
 TRIAL_SECONDS = 7 * 86400   # 7 días
 GRACE_SECONDS = 0
+
+# Código de curso — clave secreta para firmar (nunca cambiarlo o las keys viejas dejan de funcionar)
+_COURSE_SECRET = "PyScoutCurso2026!xK9#mQ7@zP3"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  5 UBICACIONES DE ARCHIVOS (Windows + Mac + Linux)
@@ -201,6 +204,13 @@ def _load() -> dict | None:
             _save(c)
             return c
 
+    # Course: segundo en prioridad — usar el que expire más tarde
+    courses = [c for c in candidates if c.get("type") == "course" and c.get("course_expires")]
+    if courses:
+        best = max(courses, key=lambda c: c.get("course_expires", ""))
+        _save(best)
+        return best
+
     # Trial: usar el más antiguo (más restrictivo)
     trials = [c for c in candidates if c.get("type") == "trial" and c.get("trial_start")]
     if trials:
@@ -305,6 +315,70 @@ def _heartbeat(d: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CÓDIGOS DE CURSO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _course_sign(body: str) -> str:
+    """4 chars de HMAC-SHA256 para firmar el cuerpo de la key de curso."""
+    return _hmac.new(_COURSE_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:4].upper()
+
+def generate_course_key(days: int = 90) -> str:
+    """Genera una key de curso que otorga N días de acceso. Solo correr en desarrollo."""
+    p1 = secrets.token_hex(2).upper()
+    p2 = secrets.token_hex(2).upper()
+    body = f"CURSO-{days:03d}-{p1}-{p2}"
+    return f"{body}-{_course_sign(body)}"
+
+def _validate_course_key(key: str) -> tuple[bool, int]:
+    """Verifica firma de la key. Retorna (válida, días)."""
+    parts = key.strip().upper().split("-")
+    # Formato esperado: CURSO-NNN-XXXX-XXXX-SIG4 (5 partes)
+    if len(parts) != 5 or parts[0] != "CURSO":
+        return False, 0
+    try:
+        days = int(parts[1])
+        if not (1 <= days <= 999):
+            return False, 0
+    except ValueError:
+        return False, 0
+    body = "-".join(parts[:4])
+    if parts[4] != _course_sign(body):
+        return False, 0
+    return True, days
+
+def activate_course_key(key: str) -> tuple[bool, str]:
+    """Activa un código de curso. Sin internet, sin Polar."""
+    valid, days = _validate_course_key(key)
+    if not valid:
+        return False, "Código de curso inválido"
+
+    existing = _load()
+    key_upper = key.strip().upper()
+    if (existing and existing.get("type") == "course"
+            and existing.get("license_key") == key_upper
+            and existing.get("hwid") == get_hwid()):
+        try:
+            rem = int((_dt(existing["course_expires"]) - _now()).total_seconds())
+            if rem > 0:
+                return True, _("Código ya activado — {} días restantes").format(rem // 86400)
+        except Exception:
+            pass
+
+    expires = (_now() + datetime.timedelta(days=days)).isoformat()
+    _save({
+        "type": "course",
+        "hwid": get_hwid(),
+        "license_key": key_upper,
+        "activated": _now_s(),
+        "last_check": _now_s(),
+        "clock_tamper": 0,
+        "course_expires": expires,
+        "course_days": days,
+    })
+    return True, _("Acceso de curso activado — {} días").format(days)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  CHECK PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -360,6 +434,17 @@ def check_license() -> tuple[bool, int, str]:
 
         return True, 999999, "pro"
 
+    # COURSE
+    if data.get("type") == "course":
+        expires = data.get("course_expires")
+        if expires:
+            try:
+                rem = int((_dt(expires) - now).total_seconds())
+                return (True, rem, "course") if rem > 0 else (False, 0, "expired")
+            except Exception:
+                pass
+        return False, 0, "expired"
+
     # TRIAL
     if data.get("type") == "trial":
         elapsed = int((now - _dt(data["trial_start"])).total_seconds())
@@ -392,6 +477,10 @@ def activate_license(license_key: str) -> tuple[bool, str]:
     key = license_key.strip()
     if not key:
         return False, "Pegá una licencia válida"
+
+    # Código de curso — no va a Polar
+    if key.upper().startswith("CURSO-"):
+        return activate_course_key(key)
 
     # Ya activada localmente?
     existing = _load()
@@ -527,7 +616,7 @@ if __name__ == "__main__":
                 print(f"    6. [✓] Registro: HKCU\\{_REG_KEY}")
             except Exception:
                 print(f"    6. [✗] Registro: HKCU\\{_REG_KEY}")
-        print(f"\n  Comandos: verificar | trial | activar <KEY> | desactivar | generar <HWID> <dias> | limpiar")
+        print(f"\n  Comandos: verificar | trial | activar <KEY> | desactivar | generar <HWID> <dias> | curso <N> <dias> | limpiar")
         sys.exit(0)
 
     c = sys.argv[1].lower()
@@ -552,6 +641,20 @@ if __name__ == "__main__":
         h, d = sys.argv[2].upper(), int(sys.argv[3])
         Path(f"license_{h[:8]}.lic").write_text(generate_offline_license(h, d), encoding="utf-8")
         print(f"\n  Generado: license_{h[:8]}.lic ({d} días)\n")
+
+    elif c == "curso":
+        n    = int(sys.argv[2]) if len(sys.argv) >= 3 else 20
+        days = int(sys.argv[3]) if len(sys.argv) >= 4 else 90
+        print(f"\n  PyScout — {n} código(s) de curso ({days} días)\n")
+        lines = []
+        for i in range(1, n + 1):
+            k = generate_course_key(days)
+            print(f"  {i:2d}. {k}")
+            lines.append(k)
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        out = Path(f"curso_keys_{date_str}_{n}x{days}d.txt")
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"\n  Guardado en: {out}\n")
 
     elif c == "limpiar":
         # Borrar TODOS los archivos (para testing)

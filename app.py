@@ -65,6 +65,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         # Licencia se gestiona desde StartDialog
+        self._setup_tour()
+        self._check_whats_new()
         self.showMaximized()
         QTimer.singleShot(0, self._apply_native_dark_titlebar)
 
@@ -255,6 +257,9 @@ class MainWindow(QMainWindow):
 
         m_help = mb.addMenu(_("Ayuda"))
         m_help.addAction(self._act(_("¿Cómo funciona?"), self._show_help))
+        m_help.addAction(self._act(_("Reiniciar tour de bienvenida"), self._restart_tour))
+        m_help.addSeparator()
+        m_help.addAction(self._act(_("Feedback"), self._show_feedback))
         m_help.addSeparator()
         m_help.addAction(self._act(_("Acerca de PyScout"), self._show_about))
         self.setMenuBar(mb)
@@ -326,6 +331,14 @@ class MainWindow(QMainWindow):
     def _on_undo_redo(self, can_undo, can_redo):
         self._undo_btn.setEnabled(can_undo)
         self._redo_btn.setEnabled(can_redo)
+
+    def closeEvent(self, event):
+        """Cancelar render activo antes de cerrar para no dejar procesos zombie."""
+        rt = getattr(self._pres_screen, '_render_thread', None)
+        if rt and rt.isRunning():
+            rt.cancel()
+            rt.wait(3000)
+        event.accept()
 
     def _switch_screen(self, idx):
         # Pausar el player de la pantalla que se abandona para liberar el
@@ -416,7 +429,7 @@ class MainWindow(QMainWindow):
 
         # Crear archivo en Documentos/PyScout/Proyectos/
         safe = "".join(c for c in name if c.isalnum() or c in " _-().").strip() or "Proyecto"
-        path = os.path.join(_docs_folder("Proyectos"), f"{safe}.scout")
+        path = os.path.join(_docs_folder("Projects"), f"{safe}.scout")
         counter = 1
         base = path
         while os.path.exists(path):
@@ -444,7 +457,7 @@ class MainWindow(QMainWindow):
 
     def _save_project_as(self):
         path, _filt = QFileDialog.getSaveFileName(self, _("Guardar proyecto"),
-            os.path.join(_docs_folder("Proyectos"), f"{state.project_name}.scout"),
+            os.path.join(_docs_folder("Projects"), f"{state.project_name}.scout"),
             filter="Scout Project (*.scout)")
         if not path: return
         if state.save_to_file(path):
@@ -457,7 +470,7 @@ class MainWindow(QMainWindow):
 
     def _load_project(self):
         path, _filt = QFileDialog.getOpenFileName(self, _("Abrir proyecto"),
-            _docs_folder("Proyectos"), filter="Scout Project (*.scout)")
+            _docs_folder("Projects"), filter="Scout Project (*.scout)")
         if not path: return
         self._load_project_path(path)
 
@@ -532,7 +545,7 @@ class MainWindow(QMainWindow):
 
     def _save_buttons(self):
         path, _filt = QFileDialog.getSaveFileName(self, _("Guardar botonera"),
-            os.path.join(_docs_folder("Botoneras"), "botonera.scoutbtn"),
+            os.path.join(_docs_folder("Buttons"), "botonera.scoutbtn"),
             filter="Scout Botonera (*.scoutbtn)")
         if not path: return
         try:
@@ -549,7 +562,7 @@ class MainWindow(QMainWindow):
 
     def _load_buttons(self):
         path, _filt = QFileDialog.getOpenFileName(self, _("Abrir botonera"),
-            _docs_folder("Botoneras"),
+            _docs_folder("Buttons"),
             filter="Scout Botonera (*.scoutbtn);;JSON (*.json)")
         if not path: return
         self._autosave_locked = True
@@ -826,7 +839,7 @@ class MainWindow(QMainWindow):
         vl.addWidget(tagline)
         vl.addSpacing(4)
 
-        version_lbl = QLabel(_("Versión 1.0"))
+        version_lbl = QLabel(_("Versión {}").format(QApplication.instance().applicationVersion()))
         version_lbl.setStyleSheet(f"color:{TEXT3}; font-size:{fs(10)}px;")
         vl.addWidget(version_lbl)
         vl.addSpacing(20)
@@ -1120,7 +1133,7 @@ class MainWindow(QMainWindow):
              _("No. PyScout funciona completamente offline. La única conexión que puede "
              "necesitar es al activar o renovar la licencia.")),
             (_("¿Dónde se guardan los proyectos?"),
-             _("En Documentos / PyScout / Proyectos. Cada proyecto es un único archivo .scout "
+             _("En Documentos / PyScout / Projects. Cada proyecto es un único archivo .scout "
              "que contiene todos tus botones, registros y listados.")),
             (_("¿Puedo trabajar con varios videos del mismo partido?"),
              _("Sí. Podés cargar hasta 10 videos fuente simultáneos y cambiar entre ellos "
@@ -1231,6 +1244,221 @@ class MainWindow(QMainWindow):
         # Restaurar el video activo si había uno cargado
         if active_path:
             state.active_source_changed.emit(active_path, active_name)
+
+    # ── Onboarding tour ───────────────────────────────────────────────────────
+    def _setup_tour(self) -> None:
+        from components.onboarding import OnboardingTour, TourStep
+        steps = [
+            # 1. Bienvenida
+            TourStep(
+                title=_("Bienvenido a PyScout"),
+                body=_(
+                    "Este tour rápido te muestra las 3 pantallas y las funciones clave. "
+                    "Avanzá con Siguiente o saltealo con ✕."
+                ),
+                widget_getter=lambda: None,
+            ),
+            # 2. Agregar video fuente
+            TourStep(
+                title=_("Agregar video fuente"),
+                body=_(
+                    "Hacé clic aquí para cargar el video del partido. "
+                    "Podés tener hasta 10 videos abiertos al mismo tiempo, cada uno en su pestaña."
+                ),
+                widget_getter=lambda: self._obs_screen._add_src_btn,
+                on_enter=lambda: self._switch_screen(0),
+            ),
+            # 3. Botones de categoría
+            TourStep(
+                title=_("Crear botones de categoría"),
+                body=_(
+                    "Con el '+' creás un botón por tipo de jugada: PNR, Transición, Tiro libre... "
+                    "Asignales color y tecla de atajo para registrar sin mouse."
+                ),
+                widget_getter=lambda: self._obs_screen._add_btn,
+            ),
+            # 4. Pestaña Ajuste
+            TourStep(
+                title=_("Pantalla Ajuste"),
+                body=_(
+                    "Cuando tengas registros, pasá a Ajuste para afinar el inicio y fin "
+                    "de cada clip con el timeline interactivo."
+                ),
+                widget_getter=lambda: self._tabs[1],
+            ),
+            # 5. Pantalla Ajuste vacía
+            TourStep(
+                title=_("Aquí aparecerán tus registros"),
+                body=_(
+                    "Cada clip marcado en Observación se lista aquí. "
+                    "Seleccioná uno y ajustá sus bordes en el timeline."
+                ),
+                widget_getter=lambda: None,
+                on_enter=lambda: self._switch_screen(1),
+            ),
+            # 6. Pestaña Presentación
+            TourStep(
+                title=_("Pantalla Presentación"),
+                body=_(
+                    "Desde Ajuste, enviás clips a Presentación para construir el video final."
+                ),
+                widget_getter=lambda: self._tabs[2],
+            ),
+            # 7. Pantalla Presentación vacía
+            TourStep(
+                title=_("Aquí aparecerán tus clips"),
+                body=_(
+                    "Los clips de tu presentación se listan aquí. "
+                    "Arrastrá las filas para reordenarlos."
+                ),
+                widget_getter=lambda: None,
+                on_enter=lambda: self._switch_screen(2),
+            ),
+            # 8. Agregar imagen
+            TourStep(
+                title=_("Intercalar imágenes"),
+                body=_(
+                    "Agregá imágenes estáticas —pizarrones, diagramas— entre los clips "
+                    "para enriquecer tu presentación táctica."
+                ),
+                widget_getter=lambda: self._pres_screen._add_img_btn,
+            ),
+            # 9. Crear película
+            TourStep(
+                title=_("Crear película"),
+                body=_(
+                    "Producí un MP4 con todos los clips concatenados, listo para el equipo. "
+                    "Elegís resolución, calidad, transiciones y si incluir audio."
+                ),
+                widget_getter=lambda: self._pres_screen._render_btn,
+            ),
+            # 10. Autoguardado y deshacer
+            TourStep(
+                title=_("Autoguardado y deshacer"),
+                body=_(
+                    "Cada cambio se guarda automáticamente. "
+                    "Ctrl+Z deshace cualquier acción. "
+                    "Usá F11 para pantalla completa durante las presentaciones."
+                ),
+                widget_getter=lambda: self._undo_btn,
+            ),
+        ]
+        self._tour = OnboardingTour(self, steps)
+        self._tour.start_if_needed()
+
+    def _restart_tour(self) -> None:
+        if hasattr(self, "_tour"):
+            self._tour.force_start()
+
+    # ── Feedback ──────────────────────────────────────────────────────────────
+    def _show_feedback(self) -> None:
+        from components.feedback import show_general_feedback
+        show_general_feedback(self)
+
+    # ── ¿Qué hay de nuevo? ────────────────────────────────────────────────────
+    _CHANGELOGS: dict[str, list[str]] = {
+        "1.0.3": [
+            "Corrección en el ajuste de clips desde el detalle de presentación",
+            "Tour de bienvenida interactivo de 10 pasos",
+            "Feedback integrado — calificá la app después de producir una película",
+            "Logging automático en Documentos/PyScout/pyscout.log",
+            "Dialog de error cuando ocurre un crash inesperado",
+        ],
+    }
+
+    def _check_whats_new(self) -> None:
+        settings = QSettings("ScoutApp", "prefs")
+        last    = settings.value("last_shown_version", "")
+        current = QApplication.instance().applicationVersion()
+        settings.setValue("last_shown_version", current)
+
+        if not last or last == current:
+            return  # Primera vez o misma versión — no mostrar
+        changes = self._CHANGELOGS.get(current)
+        if not changes:
+            return
+        QTimer.singleShot(2500, lambda: self._show_whats_new(current, changes))
+
+    def _show_whats_new(self, version: str, changes: list[str]) -> None:
+        from PySide6.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Novedades"))
+        dlg.setFixedWidth(420)
+        dlg.setStyleSheet(f"background:{BG1}; color:{TEXT0};")
+
+        vl = QVL(dlg)
+        vl.setContentsMargins(28, 24, 28, 20)
+        vl.setSpacing(0)
+
+        badge = QLabel(f"v{version}")
+        badge.setStyleSheet(
+            f"color:{BG1}; background:{ACCENT}; font-size:{fs(9)}px;"
+            f" font-weight:700; padding:2px 8px; border-radius:2px;"
+        )
+        badge.setFixedWidth(badge.sizeHint().width() + 8)
+        vl.addWidget(badge, alignment=Qt.AlignmentFlag.AlignLeft)
+        vl.addSpacing(10)
+
+        title = QLabel(_("¡PyScout actualizado!"))
+        title.setStyleSheet(
+            f"color:{TEXT0}; font-size:{fs(16)}px; font-weight:700;"
+        )
+        vl.addWidget(title)
+        vl.addSpacing(4)
+
+        sub = QLabel(_("Esto es lo que hay de nuevo en esta versión:"))
+        sub.setStyleSheet(f"color:{TEXT2}; font-size:{fs(11)}px;")
+        vl.addWidget(sub)
+        vl.addSpacing(16)
+
+        for change in changes:
+            row = QHL()
+            dot = QLabel("•")
+            dot.setFixedWidth(14)
+            dot.setStyleSheet(
+                f"color:{ACCENT}; font-size:{fs(13)}px; background:transparent; border:none;"
+            )
+            dot.setAlignment(Qt.AlignmentFlag.AlignTop)
+            txt = QLabel(_(change))
+            txt.setWordWrap(True)
+            txt.setStyleSheet(
+                f"color:{TEXT1}; font-size:{fs(12)}px; background:transparent; border:none;"
+            )
+            row.addWidget(dot)
+            row.addSpacing(4)
+            row.addWidget(txt, stretch=1)
+            vl.addLayout(row)
+            vl.addSpacing(5)
+
+        vl.addSpacing(16)
+
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background:rgba(255,252,248,0.05);")
+        vl.addWidget(sep)
+        vl.addSpacing(14)
+
+        hl = QHL()
+        hl.addStretch()
+        ok_btn = QPushButton(_("Entendido"))
+        ok_btn.setFixedHeight(34)
+        ok_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {ACCENT3}, stop:1 {ACCENT});
+                color: #1a1714; border: none;
+                border-bottom: 2px solid {ACCENT2};
+                border-radius: 2px;
+                font-size: {fs(12)}px; font-weight: 700; padding: 0 24px;
+            }}
+            QPushButton:hover {{ background: {ACCENT3}; }}
+            QPushButton:pressed {{ border-bottom: none; margin-top: 2px; }}
+        """)
+        ok_btn.clicked.connect(dlg.accept)
+        hl.addWidget(ok_btn)
+        vl.addLayout(hl)
+
+        dlg.exec()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

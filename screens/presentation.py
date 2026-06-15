@@ -29,6 +29,40 @@ from icons_helper import (
 )
 
 
+# ── Export thread (clip individual) ──────────────────────────────────────────
+
+class _ClipExportThread(QThread):
+    done = Signal(bool, str)
+
+    def __init__(self, clip_dict: dict, output_path: str,
+                 crf: int = 20, fps: int = 30,
+                 mute_audio: bool = False,
+                 show_overlay: bool = False,
+                 clip_name: str = ""):
+        super().__init__()
+        self._clip         = clip_dict
+        self._path         = output_path
+        self._crf          = crf
+        self._fps          = fps
+        self._mute_audio   = mute_audio
+        self._show_overlay = show_overlay
+        self._clip_name    = clip_name
+
+    def run(self):
+        try:
+            from utils.ffmpeg import export_clip
+            ok = export_clip(
+                self._clip, self._path,
+                crf=self._crf, fps=self._fps,
+                mute_audio=self._mute_audio,
+                show_overlay=self._show_overlay,
+                clip_name=self._clip_name,
+            )
+            self.done.emit(ok, self._path if ok else "")
+        except Exception as ex:
+            self.done.emit(False, str(ex)[:200])
+
+
 # ── Render thread ─────────────────────────────────────────────────────────────
 
 class RenderThread(QThread):
@@ -52,6 +86,14 @@ class RenderThread(QThread):
         """Señalar cancelación — el render se detiene al siguiente progress check."""
         self._cancelled = True
 
+    def _cleanup_output(self):
+        try:
+            import os
+            if self.output_path and os.path.exists(self.output_path):
+                os.unlink(self.output_path)
+        except Exception:
+            pass
+
     def run(self):
         try:
             def progress_with_cancel(t):
@@ -72,8 +114,10 @@ class RenderThread(QThread):
             else:
                 self.finished.emit(True, self.output_path)
         except InterruptedError:
+            self._cleanup_output()
             self.finished.emit(False, _("Cancelado"))
         except Exception as e:
+            self._cleanup_output()
             self.finished.emit(False, str(e)[:400])
 
 
@@ -81,6 +125,7 @@ class RenderThread(QThread):
 
 class RenderProgressDialog(QDialog):
     cancel_requested = Signal()
+    dismissed        = Signal()   # emitido cuando el user cierra o abre carpeta
 
     def __init__(self, total_dur: float, parent=None):
         super().__init__(parent)
@@ -102,13 +147,12 @@ class RenderProgressDialog(QDialog):
         layout.addWidget(title)
 
         self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
+        self._progress_bar.setRange(0, 0)   # indeterminado hasta que FFmpeg empiece
         self._progress_bar.setFixedHeight(4)
         layout.addWidget(self._progress_bar)
 
         info_row = QHBoxLayout()
-        self._pct_lbl = QLabel("0%")
+        self._pct_lbl = QLabel("")
         self._pct_lbl.setStyleSheet(f"color:{ACCENT}; font-size:{fs(22)}px; font-weight:700;")
         info_row.addWidget(self._pct_lbl)
         info_row.addStretch()
@@ -117,8 +161,8 @@ class RenderProgressDialog(QDialog):
         info_row.addWidget(self._time_lbl)
         layout.addLayout(info_row)
 
-        self._eta_lbl = QLabel(_("Calculando tiempo restante..."))
-        self._eta_lbl.setStyleSheet(f"color:{TEXT3}; font-size:{fs(11)}px;")
+        self._eta_lbl = QLabel(_("Preparando exportación..."))
+        self._eta_lbl.setStyleSheet(f"color:{TEXT2}; font-size:{fs(11)}px;")
         layout.addWidget(self._eta_lbl)
 
         sep = QFrame(); sep.setFixedHeight(1)
@@ -155,7 +199,7 @@ class RenderProgressDialog(QDialog):
                 border:1px solid {BORDER2}; border-radius:4px; padding:8px 20px; font-size:{fs(13)}px; }}
             QPushButton:hover {{ background:{BG3}; }}
         """)
-        self._close_btn.clicked.connect(self.accept)
+        self._close_btn.clicked.connect(self._on_user_close)
         comp_layout.addWidget(self._close_btn)
         
         layout.addWidget(self._completion_buttons)
@@ -176,6 +220,9 @@ class RenderProgressDialog(QDialog):
         import time as _time
         if self._start_time is None:
             self._start_time = _time.monotonic()
+            # Primer dato real: pasar a barra determinada
+            self._progress_bar.setRange(0, 100)
+            self._eta_lbl.setStyleSheet(f"color:{TEXT3}; font-size:{fs(11)}px;")
         done_sec = self._time_to_sec(time_str)
         pct = min(99, int(done_sec / self._total_dur * 100))
         self._progress_bar.setValue(pct)
@@ -208,14 +255,18 @@ class RenderProgressDialog(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowCloseButtonHint)
         self.show()  # Refrescar flags
     
+    def _on_user_close(self):
+        self.dismissed.emit()
+        self.accept()
+
     def _open_folder(self):
         """Abrir la carpeta donde está el video."""
         if not self._output_path or not os.path.exists(self._output_path):
             return
-        
+
         import subprocess, platform
         folder = os.path.dirname(self._output_path)
-        
+
         try:
             if platform.system() == "Windows":
                 os.startfile(folder)
@@ -225,6 +276,9 @@ class RenderProgressDialog(QDialog):
                 subprocess.call(["xdg-open", folder])
         except Exception as e:
             print(f"Error opening folder: {e}")
+
+        self.dismissed.emit()
+        self.accept()
 
 
 # ── Modal configuración de render ────────────────────────────────────────────
@@ -471,6 +525,7 @@ class ClipDetailDialog(QDialog):
             self._timeline.scrub_requested.connect(vw.seek)
             self._timeline.start_changed.connect(self._on_start_changed)
             self._timeline.end_changed.connect(self._on_end_changed)
+            self._timeline.handle_released.connect(vw.pause)
             vw.position_changed.connect(self._timeline.update_playhead)
             vc_layout.addWidget(self._timeline)
             
@@ -835,33 +890,17 @@ class ClipDetailDialog(QDialog):
     # ── Playback ──────────────────────────────────────────────────────────────
 
     def _on_start_changed(self, offset_sec):
-        """Callback cuando el usuario arrastra el handle de inicio en el timeline."""
-        # El timeline emite offset desde el centro del clip
-        # Necesitamos calcular el nuevo inicio absoluto
-        clip_center = self._item.clip_start + (self._item.clip_dur / 2)
-        new_start = clip_center + offset_sec
-        
-        # Calcular nueva duración (el fin no cambia)
-        clip_end = self._item.clip_start + self._item.clip_dur
-        new_dur = clip_end - new_start
-        
-        # Actualizar en el estado
+        # offset_sec = start_sec - timeline._timestamp (tiempo absoluto directo)
+        new_start = self._timeline._timestamp + offset_sec
+        clip_end   = self._item.clip_start + self._item.clip_dur
+        new_dur    = max(0.5, clip_end - new_start)
         state.update_pres_item(self._item.id, clip_start=new_start, clip_dur=new_dur)
-        self._item.clip_start = new_start
-        self._item.clip_dur = new_dur
-    
+
     def _on_end_changed(self, offset_sec):
-        """Callback cuando el usuario arrastra el handle de fin en el timeline."""
-        # El timeline emite offset desde el centro del clip
-        clip_center = self._item.clip_start + (self._item.clip_dur / 2)
-        new_end = clip_center + offset_sec
-        
-        # Calcular nueva duración (el inicio no cambia)
-        new_dur = new_end - self._item.clip_start
-        
-        # Actualizar en el estado
+        # offset_sec = end_sec - timeline._timestamp (tiempo absoluto directo)
+        new_end = self._timeline._timestamp + offset_sec
+        new_dur = max(0.5, new_end - self._item.clip_start)
         state.update_pres_item(self._item.id, clip_dur=new_dur)
-        self._item.clip_dur = new_dur
 
     def _check_loop(self, pos):
         """Loop: si la posición supera el final del clip, volver al inicio."""
@@ -1809,6 +1848,10 @@ class PresentationRowWidget(QWidget):
         act_color  = menu.addAction(
             _("Cambiar color ({} clips)").format(n) if n > 1 else _("Cambiar color")
         )
+        act_export = None
+        if self._item.type == "clip":
+            menu.addSeparator()
+            act_export = menu.addAction(_("Exportar clip"))
         menu.addSeparator()
         act_del    = menu.addAction(_("Eliminar registro"))
         chosen = menu.exec(e.globalPos())
@@ -1820,6 +1863,8 @@ class PresentationRowWidget(QWidget):
             self._toggle_visibility()
         elif chosen == act_color:
             self._pick_color_for(selected_ids)
+        elif act_export and chosen == act_export:
+            self._export_item()
         elif chosen == act_del:
             self.delete_requested.emit(self._item.id)
 
@@ -2128,6 +2173,43 @@ class PresentationRowWidget(QWidget):
 
     def _apply_visibility_ui(self):
         pass  # handled in _toggle_visibility
+
+    def _export_item(self):
+        """Exportar este item de presentación como MP4 individual."""
+        from components.dialogs import ClipExportSettingsDialog
+        dlg = ClipExportSettingsDialog(self)
+        if dlg.exec() != ClipExportSettingsDialog.DialogCode.Accepted:
+            return
+        import os
+        docs = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Exported")
+        os.makedirs(docs, exist_ok=True)
+        safe = self._item.name.replace("/", "-").replace("\\", "-").replace(":", "-")
+        default = os.path.join(docs, f"{safe}.mp4")
+        out, _ = QFileDialog.getSaveFileName(
+            self, _("Guardar clip como"), default, "Video MP4 (*.mp4)"
+        )
+        if not out:
+            return
+        clip_dict = {
+            "video_path": self._item.video_path,
+            "clip_start":  self._item.clip_start,
+            "clip_dur":    max(0.1, self._item.clip_dur),
+        }
+        state.toast_requested.emit(_("Exportando {}...").format(self._item.name))
+        self._export_thread = _ClipExportThread(
+            clip_dict, out,
+            crf=dlg.crf, fps=dlg.fps,
+            mute_audio=dlg.mute_audio,
+            show_overlay=dlg.show_overlay,
+            clip_name=self._item.name,
+        )
+        def _on_done(ok, path):
+            if ok:
+                state.toast_requested.emit(_("Exportado: {}").format(os.path.basename(path)))
+            else:
+                state.toast_requested.emit(_("Error al exportar"))
+        self._export_thread.done.connect(_on_done)
+        self._export_thread.start()
     
     def update_column_widths(self, new_widths: dict):
         """Actualizar anchos de columnas sin recrear la fila - estilo Excel."""
@@ -2883,6 +2965,14 @@ class PresentationScreen(QWidget):
         self._empty_lbl = _make_pres_placeholder()
         self._list_layout.insertWidget(0, self._empty_lbl)
 
+        self._hint_lbl = QLabel(_("Doble clic en un clip para ver su detalle"))
+        self._hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._hint_lbl.setStyleSheet(
+            f"color: rgba(240,237,232,0.22); font-size:{fs(12)}px;"
+            f" font-style:italic; padding:20px 0 8px 0; background:transparent;"
+        )
+        self._hint_lbl.hide()
+
         self._list_scroll.setWidget(self._list_widget)
         ml.addWidget(self._list_scroll, stretch=1)
 
@@ -2992,6 +3082,7 @@ class PresentationScreen(QWidget):
             QPushButton:hover {{ color:{TEXT0}; border-bottom:1px solid {ACCENT}; }}
         """)
         add_img_btn.clicked.connect(self._add_image)
+        self._add_img_btn = add_img_btn
         sl.addWidget(add_img_btn)
 
         sep = QFrame(); sep.setFixedHeight(1)
@@ -3091,6 +3182,7 @@ class PresentationScreen(QWidget):
 
     def _refresh(self):
         self._list_layout.removeWidget(self._empty_lbl)
+        self._list_layout.removeWidget(self._hint_lbl)
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             if item.widget():
@@ -3102,6 +3194,7 @@ class PresentationScreen(QWidget):
         if not items:
             self._list_layout.insertWidget(0, self._empty_lbl)
             self._empty_lbl.show()
+            self._hint_lbl.hide()
         else:
             self._empty_lbl.hide()
             insert_pos = 0
@@ -3120,6 +3213,8 @@ class PresentationScreen(QWidget):
                     sep.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                     self._list_layout.insertWidget(insert_pos, sep)
                     insert_pos += 1
+            self._list_layout.insertWidget(insert_pos, self._hint_lbl)
+            self._hint_lbl.show()
 
         self._refresh_stats()
 
@@ -3179,8 +3274,11 @@ class PresentationScreen(QWidget):
 
     def _render_single(self, visible_items, settings_dlg):
         """Render normal: un solo MP4 concatenado."""
+        _movies_dir = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Movies")
+        os.makedirs(_movies_dir, exist_ok=True)
+        _default = os.path.join(_movies_dir, "presentacion.mp4")
         path, _sel = QFileDialog.getSaveFileName(self, _("Exportar presentación"),
-            "presentacion.mp4", "Video MP4 (*.mp4)")
+            _default, "Video MP4 (*.mp4)")
         if not path: return
         items = [{"type": p.type, "name": p.name,
                   "video_path": p.video_path, "image_path": p.image_path,
@@ -3204,7 +3302,9 @@ class PresentationScreen(QWidget):
     def _render_separate(self, visible_items, settings_dlg):
         """Render separado: un MP4 por cada registro."""
         import os
-        folder = QFileDialog.getExistingDirectory(self, _("Carpeta para archivos separados"))
+        _movies_dir = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Movies")
+        os.makedirs(_movies_dir, exist_ok=True)
+        folder = QFileDialog.getExistingDirectory(self, _("Carpeta para archivos separados"), _movies_dir)
         if not folder: return
         self._render_btn.setEnabled(False)
         self._render_btn.setText(_("Procesando..."))
@@ -3279,7 +3379,10 @@ class PresentationScreen(QWidget):
         if hasattr(self, '_progress_dlg'):
             if success:
                 self._progress_dlg.mark_done()
-                # NO cerrar automáticamente - dejar que el usuario elija
+                from components.feedback import show_post_render_feedback
+                self._progress_dlg.dismissed.connect(
+                    lambda: show_post_render_feedback(self)
+                )
             else:
                 self._progress_dlg.accept()
                 state.toast_requested.emit(_("Error en el render: {}").format(msg))

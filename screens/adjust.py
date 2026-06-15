@@ -3,9 +3,10 @@ import warnings
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QLineEdit, QMessageBox,
-    QComboBox, QSplitter
+    QComboBox, QSplitter, QMenu
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QThread, Signal as _Signal
+from PySide6.QtGui import QAction
 
 from components.video_player import MpvWidget
 from components.timeline import ScrubBar, ClipTimeline
@@ -25,6 +26,39 @@ from icons_helper import play_icon, pause_icon, mute_icon, volume_icon
 ROW_EVEN = "#1a1a22"
 ROW_ODD  = "#16161e"
 ROW_SEL  = "#222230"
+
+
+class _ClipExportThread(QThread):
+    done = _Signal(bool, str)
+
+    def __init__(self, clip_dict: dict, output_path: str,
+                 crf: int = 20, fps: int = 30,
+                 mute_audio: bool = False,
+                 show_overlay: bool = False,
+                 clip_name: str = ""):
+        super().__init__()
+        self._clip         = clip_dict
+        self._path         = output_path
+        self._crf          = crf
+        self._fps          = fps
+        self._mute_audio   = mute_audio
+        self._show_overlay = show_overlay
+        self._clip_name    = clip_name
+
+    def run(self):
+        try:
+            from utils.ffmpeg import export_clip
+            ok = export_clip(
+                self._clip, self._path,
+                crf=self._crf, fps=self._fps,
+                mute_audio=self._mute_audio,
+                show_overlay=self._show_overlay,
+                clip_name=self._clip_name,
+            )
+            self.done.emit(ok, self._path if ok else "")
+        except Exception as ex:
+            self.done.emit(False, str(ex)[:200])
+
 
 class AdjustScreen(QWidget):
     def __init__(self, parent=None):
@@ -570,7 +604,12 @@ class AdjustScreen(QWidget):
         row.enterEvent = _on_enter
         row.leaveEvent = _on_leave
 
-        row.mousePressEvent       = lambda e, c=clip: self._select_clip(c)
+        def _row_press(e, c=clip):
+            if e.button() == Qt.MouseButton.RightButton:
+                self._show_clip_context_menu(c, e.globalPosition().toPoint())
+            else:
+                self._select_clip(c)
+        row.mousePressEvent       = _row_press
         row.mouseDoubleClickEvent = lambda e, c=clip: self._open_edit_dialog(c)
         return row
 
@@ -702,3 +741,63 @@ class AdjustScreen(QWidget):
                 self._edit.hide()
                 self._empty.show()
             state.remove_clip(clip.id)
+
+    def _show_clip_context_menu(self, clip: Clip, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{ background:{BG2}; border:1px solid {BORDER2}; padding:4px 0; color:{TEXT0}; }}
+            QMenu::item {{ padding:7px 20px; font-size:{fs(13)}px; }}
+            QMenu::item:selected {{ background:{BG3}; color:{ACCENT}; }}
+            QMenu::separator {{ height:1px; background:{BORDER}; margin:3px 0; }}
+        """)
+        act_export = QAction(_("Exportar clip"), menu)
+        act_export.triggered.connect(lambda: self._export_clip(clip))
+        menu.addAction(act_export)
+        menu.addSeparator()
+        act_pres = QAction(_("Agregar a presentación"), menu)
+        act_pres.triggered.connect(lambda: state.add_clip_to_presentation(
+            clip,
+            clip_start=self._timeline.start_sec if self._selected_clip and self._selected_clip.id == clip.id else clip.start_sec,
+            clip_dur=self._timeline.duration if self._selected_clip and self._selected_clip.id == clip.id else max(0.1, clip.end_sec - clip.start_sec),
+        ))
+        menu.addAction(act_pres)
+        menu.exec(pos)
+
+    def _export_clip(self, clip: Clip):
+        from components.dialogs import ClipExportSettingsDialog
+        dlg = ClipExportSettingsDialog(self)
+        if dlg.exec() != ClipExportSettingsDialog.DialogCode.Accepted:
+            return
+        import os
+        docs = os.path.join(os.path.expanduser("~"), "Documents", "PyScout", "Exported")
+        os.makedirs(docs, exist_ok=True)
+        safe = clip.name.replace("/", "-").replace("\\", "-").replace(":", "-")
+        default = os.path.join(docs, f"{safe}.mp4")
+        out, _ = QFileDialog.getSaveFileName(
+            self, _("Guardar clip como"), default, "Video MP4 (*.mp4)"
+        )
+        if not out:
+            return
+        # Si el clip está seleccionado usamos los tiempos ajustados del timeline
+        if self._selected_clip and self._selected_clip.id == clip.id:
+            start = self._timeline.start_sec
+            dur   = self._timeline.duration
+        else:
+            start = clip.start_sec
+            dur   = max(0.1, clip.end_sec - clip.start_sec)
+        clip_dict = {"video_path": clip.video_path, "clip_start": start, "clip_dur": dur}
+        state.toast_requested.emit(_("Exportando {}...").format(clip.name))
+        self._export_thread = _ClipExportThread(
+            clip_dict, out,
+            crf=dlg.crf, fps=dlg.fps,
+            mute_audio=dlg.mute_audio,
+            show_overlay=dlg.show_overlay,
+            clip_name=clip.name,
+        )
+        def _on_done(ok, path):
+            if ok:
+                state.toast_requested.emit(_("Exportado: {}").format(os.path.basename(path)))
+            else:
+                state.toast_requested.emit(_("Error al exportar"))
+        self._export_thread.done.connect(_on_done)
+        self._export_thread.start()

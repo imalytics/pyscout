@@ -26,10 +26,10 @@ def _load_libmpv():
     """Carga libmpv según el sistema operativo."""
     _DIR = os.path.dirname(os.path.abspath(__file__))
     os.environ["PATH"] = _DIR + os.pathsep + os.environ.get("PATH", "")
-    
+
     if sys.platform == "darwin":
         os.environ["DYLD_LIBRARY_PATH"] = _DIR + os.pathsep + os.environ.get("DYLD_LIBRARY_PATH", "")
-    
+
     paths_to_try = []
     if sys.platform == "win32":
         if os.path.exists(LIBMPV_PATH): paths_to_try.append(LIBMPV_PATH)
@@ -39,7 +39,7 @@ def _load_libmpv():
         else:
             for hb_path in ["/opt/homebrew/lib/libmpv.dylib", "/usr/local/lib/libmpv.dylib"]:
                 if os.path.exists(hb_path): paths_to_try.append(hb_path); break
-    
+
     loaded = False
     for lib_path in paths_to_try:
         try:
@@ -49,7 +49,7 @@ def _load_libmpv():
             break
         except Exception as e:
             print(f"[libmpv] ✗ Falló {lib_path}: {e}")
-            
+
     if not loaded:
         print("[libmpv] ⚠ Advertencia: libmpv no cargado.")
 
@@ -72,7 +72,7 @@ def _ensure_project_folders():
     else:
         docs = _Path.home() / "Documents"
     root = docs / "PyScout"
-    for sub in ("Proyectos", "Botoneras", "Exportados"):
+    for sub in ("Projects", "Buttons", "Exported", "Movies"):
         try:
             (root / sub).mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -80,6 +80,108 @@ def _ensure_project_folders():
     return str(root)
 
 PYSCOUT_DOCS = _ensure_project_folders()
+
+# ── Logging a archivo ────────────────────────────────────────────────────────
+import logging as _logging
+from logging.handlers import RotatingFileHandler as _RotFH
+
+def _setup_logging(docs_root: str) -> str:
+    """Configura logging rotativo. Devuelve la ruta del archivo de log."""
+    log_path = os.path.join(docs_root, "pyscout.log")
+    fmt = _logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    fh = _RotFH(log_path, maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8")
+    fh.setFormatter(fmt)
+    fh.setLevel(_logging.DEBUG)
+
+    root = _logging.getLogger()
+    root.setLevel(_logging.DEBUG)
+    root.addHandler(fh)
+    _logging.info("PyScout %s — sesión iniciada", APP_VERSION)
+    return log_path
+
+LOG_PATH = _setup_logging(PYSCOUT_DOCS)
+
+# ── Crash dialog global ───────────────────────────────────────────────────────
+def _install_excepthook() -> None:
+    """Redirige excepciones no capturadas al log y muestra un dialog al usuario."""
+    import traceback as _tb
+    _orig = sys.excepthook
+
+    def _handler(exc_type, exc_val, exc_tb):
+        _logging.critical("Excepción no capturada", exc_info=(exc_type, exc_val, exc_tb))
+        err_text = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
+
+        try:
+            from PySide6.QtWidgets import (
+                QApplication, QDialog, QVBoxLayout, QHBoxLayout,
+                QLabel, QPushButton, QTextEdit,
+            )
+            app = QApplication.instance()
+            if app:
+                dlg = QDialog()
+                dlg.setWindowTitle("PyScout — Error inesperado")
+                dlg.setFixedWidth(500)
+                dlg.setStyleSheet("background:#111115; color:#F0EDE8;")
+                vl = QVBoxLayout(dlg)
+                vl.setContentsMargins(24, 20, 24, 16)
+                vl.setSpacing(10)
+
+                title = QLabel("PyScout encontró un error inesperado")
+                title.setStyleSheet("font-size:14px; font-weight:700;")
+                vl.addWidget(title)
+
+                msg = QLabel(
+                    "La app se cerrará. Si tenías un proyecto abierto, "
+                    "el autoguardado debería haber preservado tu trabajo.\n\n"
+                    "Mandá el log al soporte para que podamos resolverlo."
+                )
+                msg.setStyleSheet("font-size:11px; color:#C4BEB5;")
+                msg.setWordWrap(True)
+                vl.addWidget(msg)
+
+                txt = QTextEdit()
+                txt.setReadOnly(True)
+                txt.setPlainText(err_text)
+                txt.setFixedHeight(150)
+                txt.setStyleSheet(
+                    "background:#0C0C0E; color:#7A7570; font-family:monospace;"
+                    " font-size:10px; border:1px solid rgba(255,255,255,0.08);"
+                )
+                vl.addWidget(txt)
+
+                log_lbl = QLabel(f"Log: {LOG_PATH}")
+                log_lbl.setStyleSheet("font-size:10px; color:#3E3C3A;")
+                log_lbl.setWordWrap(True)
+                vl.addWidget(log_lbl)
+
+                hl = QHBoxLayout()
+                copy_btn = QPushButton("Copiar error")
+                copy_btn.setStyleSheet(
+                    "background:#1F1F26; color:#C4BEB5; border:none;"
+                    " padding:6px 14px; font-size:11px;"
+                )
+                copy_btn.clicked.connect(lambda: app.clipboard().setText(err_text))
+                hl.addWidget(copy_btn)
+                hl.addStretch()
+                close_btn = QPushButton("Cerrar")
+                close_btn.setStyleSheet(
+                    "background:#C9A44A; color:#1a1714; border:none;"
+                    " padding:6px 18px; font-weight:700; font-size:11px;"
+                )
+                close_btn.clicked.connect(dlg.accept)
+                hl.addWidget(close_btn)
+                vl.addLayout(hl)
+
+                dlg.exec()
+        except Exception:
+            pass
+
+        _orig(exc_type, exc_val, exc_tb)
+
+    sys.excepthook = _handler
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPalette, QPixmap, QIcon
@@ -95,10 +197,10 @@ class SplashScreen(QWidget):
         self.setFixedSize(600, 400)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        
+
         if os.path.exists(ICO_PATH):
             self.setWindowIcon(QIcon(ICO_PATH))
-            
+
         self._build_ui()
         self._center_on_screen()
 
@@ -113,7 +215,7 @@ class SplashScreen(QWidget):
         lay = QVBoxLayout(card)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
-        
+
         self.image_label = QLabel()
         self.image_label.setFixedHeight(240)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -172,10 +274,10 @@ def _apply_theme(app: QApplication):
     from styles.theme import load_saved_theme, build_style, BG0, BG1, BG2, TEXT0, ACCENT
     load_saved_theme()
     app.setApplicationName("PyScout")
-    app.setApplicationVersion("1.0")
+    app.setApplicationVersion(APP_VERSION)
     app.setStyle("Fusion")
     if os.path.exists(ICO_PATH): app.setWindowIcon(QIcon(ICO_PATH))
-    
+
     pal = QPalette()
     pal.setColor(QPalette.ColorRole.Window, QColor(BG0))
     pal.setColor(QPalette.ColorRole.WindowText, QColor(TEXT0))
@@ -195,6 +297,7 @@ def main():
         except Exception: pass
 
     app = QApplication(sys.argv)
+    _install_excepthook()
 
     from utils.i18n import detect_and_load
     detect_and_load()

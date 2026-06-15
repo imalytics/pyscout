@@ -68,6 +68,7 @@ class MpvWidget(QWidget):
                 dict(vo="gpu",      hwdec="no"),
                 dict(vo="direct3d", hwdec="no"),
                 dict(vo="gpu-next", hwdec="auto-safe", gpu_api="d3d11"),
+                dict(vo="software", hwdec="no"),
             ]
 
         for cfg in _configs:
@@ -168,6 +169,10 @@ class MpvWidget(QWidget):
     def pause(self):
         if self._player:
             self._player.pause = True
+
+    def stop(self):
+        if self._player:
+            self._player.command('stop')
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
