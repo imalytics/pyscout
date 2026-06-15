@@ -148,7 +148,7 @@ jobs:
           cat > docs/version.json << EOF
           {
             "version": "$VER",
-            "download_url": "https://github.com/imahernandez/pyscout/releases/download/$TAG/PyScout-Setup.exe",
+            "download_url": "https://github.com/imalytics/pyscout/releases/download/$TAG/PyScout-Setup.exe",
             "changelog": "Ver release notes en GitHub"
           }
           EOF

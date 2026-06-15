@@ -3,7 +3,7 @@ import os, sys, threading, tempfile
 from PySide6.QtCore import QObject, Signal
 
 CURRENT_VERSION = "1.0.4"
-UPDATE_URL = "https://imahernandez.github.io/pyscout/version.json"
+UPDATE_URL = "https://imalytics.github.io/pyscout/version.json"
 
 
 def get_install_dir() -> str:
