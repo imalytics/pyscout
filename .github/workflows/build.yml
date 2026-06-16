@@ -22,6 +22,35 @@ jobs:
       - name: Install Python dependencies
         run: pip install nuitka pyside6 python-mpv requests pillow ordered-set
 
+      - name: Download ffmpeg and libmpv
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN" }
+
+          # ffmpeg desde BtbN (build estático lgpl)
+          $rel = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" -Headers $headers
+          $asset = $rel.assets | Where-Object { $_.name -like "*win64-lgpl.zip" -and $_.name -notlike "*shared*" } | Select-Object -First 1
+          Invoke-WebRequest $asset.browser_download_url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          $ffmpeg  = Get-ChildItem ffmpeg_tmp -Filter "ffmpeg.exe"  -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem ffmpeg_tmp -Filter "ffprobe.exe" -Recurse | Select-Object -First 1
+          Copy-Item $ffmpeg.FullName  .\ffmpeg.exe
+          Copy-Item $ffprobe.FullName .\ffprobe.exe
+          Remove-Item -Recurse -Force ffmpeg.zip, ffmpeg_tmp
+
+          # libmpv desde el paquete mpv de Chocolatey
+          choco install mpv -y --no-progress
+          $dll = Get-ChildItem "C:\ProgramData\chocolatey\lib\mpv" -Filter "libmpv-2.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dll) {
+            $dll = Get-ChildItem "C:\ProgramData\chocolatey" -Filter "libmpv-2.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $dll) { throw "libmpv-2.dll no encontrado tras instalar mpv" }
+          Copy-Item $dll.FullName .\libmpv-2.dll
+
+          Write-Host "Listo: ffmpeg=$(Test-Path .\ffmpeg.exe) ffprobe=$(Test-Path .\ffprobe.exe) libmpv=$(Test-Path .\libmpv-2.dll)"
+
       - name: Build with Nuitka
         run: >
           python -m nuitka
