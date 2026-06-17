@@ -163,7 +163,14 @@ jobs:
             artifacts/PyScout-macOS.zip
           generate_release_notes: true
 
-      - name: Checkout repo for Pages update
+  # ── Pages: actualiza version.json independientemente del build ────────────
+  update-pages:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           ref: main
