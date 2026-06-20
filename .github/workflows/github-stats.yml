@@ -1,9 +1,7 @@
 name: GitHub Download Stats
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'   # cada 6 horas
-  workflow_dispatch:          # también ejecutable a mano desde Actions
+  workflow_dispatch:          # solo manual hasta configurar Supabase
 
 jobs:
   record-stats:
